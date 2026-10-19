@@ -6,6 +6,7 @@ if (!window.t3SettleBoom) {
   const GLYPHS = "@#$%&*/=-+?!~<>\\|█▓▒░";
   const WORD = "SETTLED";
   const DURATION = 1800;
+  const CHARGE = 420;
   const MUTED_KEY = "t3ext.settle-boom.muted";
   const ROW = "[data-thread-item]";
 
@@ -17,37 +18,63 @@ if (!window.t3SettleBoom) {
   const easeOutCubic = (p) => 1 - (1 - p) ** 3;
   const monoFont = () => getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim() || "ui-monospace, Menlo, monospace";
 
-  // --- Where the thread was --------------------------------------------------------------------
+  // --- Which thread, and where ----------------------------------------------------------------
 
   // A row's data-thread-item is "<environmentId>:<threadId>".
-  const threadIdOf = (row) => row.getAttribute("data-thread-item").split(":").pop();
-  const rowFor = (threadId) => [...document.querySelectorAll(ROW)].find((row) => threadIdOf(row) === threadId);
+  const rowFor = (threadId) => [...document.querySelectorAll(ROW)].find((row) => row.getAttribute("data-thread-item").endsWith(`:${threadId}`));
 
-  // Clicking Settle removes the row before the server confirms, so remember rows as they are used.
-  const touched = new Map();
-  const remember = (event) => {
-    const row = event.target instanceof Element ? event.target.closest(ROW) : null;
-    if (row) touched.set(threadIdOf(row), { rect: row.getBoundingClientRect(), at: performance.now() });
+  const backgroundOf = (node) => {
+    for (let at = node; at; at = at.parentElement) {
+      const color = getComputedStyle(at).backgroundColor;
+      if (color && color !== "transparent" && !/rgba\(.*, 0\)$/.test(color)) return color;
+    }
+    return "black";
   };
-  for (const type of ["pointerdown", "contextmenu", "focusin"]) addEventListener(type, remember, true);
 
-  function originFor(threadId) {
-    const remembered = touched.get(threadId);
-    const rect = rowFor(threadId)?.getBoundingClientRect() ?? (remembered && performance.now() - remembered.at < 10_000 ? remembered.rect : null);
-    if (rect && rect.width > 0) return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    return { x: innerWidth / 2, y: innerHeight / 2 };
+  // Everything the effect needs from the row, taken while it is still on screen: T3 moves it to
+  // Settled right after. Without a row (a filter hides it, its project is collapsed) the effect
+  // plays in the middle of the window.
+  function target(threadId, title) {
+    const row = rowFor(threadId);
+    const rect = row?.getBoundingClientRect();
+    if (!rect?.width) return { x: innerWidth / 2, y: innerHeight / 2, title: title ?? "" };
+    const copy = row.cloneNode(true);
+    copy.removeAttribute("data-thread-item");
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      title: title ?? row.innerText.split("\n")[0],
+      row: { copy, rect, background: backgroundOf(row) },
+    };
   }
 
   // --- When a thread settles -------------------------------------------------------------------
 
-  // The server pushes `thread.updated` with `settledAt` set when a thread settles, by hand or
-  // automatically. The socket opened before this script ran, so the frames are read through the
-  // MessageEvent `data` getter instead of a listener. It runs inside T3's own handler, before
-  // T3 removes the row, so it must never throw.
+  // Settling in this window (the row's Settle button, the thread menu, ⌘⇧S) sends a
+  // `thread.settle` command before T3 moves the row, so the effect starts there. Settles from
+  // anywhere else (auto-settle, an agent, another window) arrive as a `thread.updated` push with
+  // `settledAt` set, read before T3 handles it. The socket opened before this script ran, so
+  // both hooks sit on prototypes. They run inside T3's own code, so they must never throw.
   const FRESH_MS = 30_000;
   const seen = new Set();
+  const sent = new Map();
 
-  function onFrame(text) {
+  const guard = (fn) => (...args) => {
+    try {
+      fn(...args);
+    } catch (error) {
+      console.error("[settle-boom]", error);
+    }
+  };
+
+  const onSend = guard((text) => {
+    const command = JSON.parse(text).payload;
+    if (command?.type !== "thread.settle") return;
+    sent.set(command.threadId, Date.now());
+    boom(target(command.threadId));
+  });
+
+  const onFrame = guard((text) => {
     const frame = JSON.parse(text);
     for (const value of Array.isArray(frame?.values) ? frame.values : []) {
       const thread = value?.kind === "thread.updated" ? value.thread : null;
@@ -55,9 +82,17 @@ if (!window.t3SettleBoom) {
       const key = `${thread.id}@${thread.settledAt}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      if (Date.now() - Date.parse(thread.settledAt) < FRESH_MS) boom({ ...originFor(thread.id), title: thread.title });
+      if (Date.now() - Date.parse(thread.settledAt) >= FRESH_MS) continue;
+      if (Date.now() - (sent.get(thread.id) ?? 0) < FRESH_MS) continue;
+      boom(target(thread.id, thread.title));
     }
-  }
+  });
+
+  const send = WebSocket.prototype.send;
+  WebSocket.prototype.send = function (payload) {
+    if (typeof payload === "string" && payload.includes('"type":"thread.settle"')) onSend(payload);
+    return send.call(this, payload);
+  };
 
   const data = Object.getOwnPropertyDescriptor(MessageEvent.prototype, "data");
   const inspected = new WeakSet();
@@ -67,13 +102,7 @@ if (!window.t3SettleBoom) {
       const value = data.get.call(this);
       if (typeof value === "string" && !inspected.has(this) && this.target instanceof WebSocket) {
         inspected.add(this);
-        if (value.includes('"settledAt":"')) {
-          try {
-            onFrame(value);
-          } catch (error) {
-            console.error("[settle-boom]", error);
-          }
-        }
+        if (value.includes('"settledAt":"')) onFrame(value);
       }
       return value;
     },
@@ -134,23 +163,40 @@ if (!window.t3SettleBoom) {
     root.animate([{ transform: "none" }, ...hops, { transform: "none" }], { duration: 380, easing: "ease-out" });
   }
 
-  function boom({ x, y, title = "", pauseAt = null }) {
+  function ghost({ copy, rect, background }) {
+    const node = document.createElement("div");
+    node.className = "t3-settle-boom-ghost";
+    Object.assign(node.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`, background });
+    node.append(copy);
+    document.body.append(node);
+    return node;
+  }
+
+  function boom({ x, y, title = "", row = null, pauseAt = null }) {
     const calm = reducedMotion.matches;
+    const charge = row && !calm ? CHARGE : 0;
     scenes.push({
       x,
       y,
       calm,
+      charge,
       pauseAt,
       start: performance.now(),
       spin: rand(0, Math.PI * 2),
       debris: calm ? [] : debris(),
       sparks: calm ? [] : sparks(),
+      ghost: row ? ghost(row) : null,
       label: label(x, y, title),
+      shaken: calm,
     });
-    if (!calm) shake();
-    sound.play();
+    sound.play(charge / 1000);
     if (!frame) frame = requestAnimationFrame(tick);
   }
+
+  const removeScene = (scene) => {
+    scene.label.node.remove();
+    scene.ghost?.remove();
+  };
 
   function tick(now) {
     frame = 0;
@@ -169,8 +215,8 @@ if (!window.t3SettleBoom) {
     ctx.clearRect(0, 0, innerWidth, innerHeight);
     scenes = scenes.filter((scene) => {
       const elapsed = Math.min(now - scene.start, scene.pauseAt ?? Infinity);
-      if (elapsed >= DURATION) {
-        scene.label.node.remove();
+      if (elapsed >= scene.charge + DURATION) {
+        removeScene(scene);
         return false;
       }
       draw(scene, elapsed);
@@ -183,18 +229,47 @@ if (!window.t3SettleBoom) {
     }
   }
 
+  // `e` counts from the start; the blast starts after the row's charge.
   function draw(scene, e) {
+    drawGhost(scene, e);
+    const b = e - scene.charge;
+    if (b < 0) return;
+    if (!scene.shaken) {
+      scene.shaken = true;
+      shake();
+    }
     const { x, y } = scene;
     ctx.save();
-    if (!scene.calm) drawGrid(x, y, e);
-    drawRings(scene, e);
+    if (!scene.calm) drawGrid(x, y, b);
+    drawRings(scene, b);
     if (!scene.calm) {
-      drawCore(x, y, e);
-      drawSparks(scene, e);
-      drawDebris(scene, e);
+      drawCore(x, y, b);
+      drawSparks(scene, b);
+      drawDebris(scene, b);
     }
     ctx.restore();
-    drawLabel(scene, e);
+    drawLabel(scene, b);
+  }
+
+  // The row's copy shakes harder and brightens, like a failing effect in the Institute, then
+  // bursts. Each 45 ms hop has its own fixed offset, so a paused frame holds still.
+  function drawGhost(scene, e) {
+    const node = scene.ghost;
+    if (!node) return;
+    if (e < scene.charge) {
+      const p = e / scene.charge;
+      const hop = Math.floor(e / 45);
+      const jitter = (n) => (Math.sin(hop * 12.9898 + n * 78.233) * 43758.5453) % 1;
+      const amp = 1.5 + 5 * p;
+      node.style.transform = `translate(${(jitter(1) * amp).toFixed(2)}px, ${(jitter(2) * amp * 0.6).toFixed(2)}px) rotate(${(jitter(3) * p * 3).toFixed(2)}deg)`;
+      node.style.filter = `brightness(${(1 + p * 1.6).toFixed(2)}) contrast(${(1 + p * 0.4).toFixed(2)})`;
+      node.style.boxShadow = `0 0 0 1px rgba(${INK}, ${(0.25 + p * 0.6).toFixed(2)}), 0 0 ${(24 * p).toFixed(1)}px rgba(${INK}, ${(0.35 * p).toFixed(2)})`;
+      return;
+    }
+    const p = clamp01((e - scene.charge) / 140);
+    node.style.transform = `scale(${(1 + p * 0.12).toFixed(3)})`;
+    node.style.filter = `brightness(${(2.6 - p).toFixed(2)}) blur(${(p * 6).toFixed(2)}px)`;
+    node.style.opacity = String(1 - p);
   }
 
   // The dot grid lights up as the shock wave passes through it.
@@ -395,7 +470,14 @@ if (!window.t3SettleBoom) {
       thump.frequency.exponentialRampToValueAtTime(36, t + 0.35);
     }
 
-    function schedule(g, t) {
+    // While the row charges: quick rising sine ticks, the Institute's "running" blips.
+    function schedule(g, t, charge) {
+      if (charge > 0) {
+        [659.25, 783.99, 880].forEach((frequency, i) =>
+          voice(g, "sine", frequency, t + (i * charge) / 3, { attack: 0.002, decay: 0.08, sustain: 0, hold: 0.03, release: 0.1, peak: 0.3 }, [g.out, g.wet]),
+        ); // E5 G5 A5
+        t += charge;
+      }
       blast(g, t);
       fatSaw(g, 155.56, t, { attack: 0.01, decay: 0.5, sustain: 0.3, hold: 0.0625, release: 1.5, peak: 0.45 }); // D#3
       fatSaw(g, 32.7, t + 0.1, { attack: 0.01, decay: 0.5, sustain: 0.3, hold: 0.5, release: 1.2, peak: 0.55 }); // C1
@@ -406,15 +488,15 @@ if (!window.t3SettleBoom) {
 
     const context = () => (live ??= graph(new AudioContext())).audio;
 
-    function play() {
+    function play(charge = 0) {
       if (localStorage.getItem(MUTED_KEY) === "1") return;
       if (context().state === "suspended") context().resume();
-      schedule(live, context().currentTime + 0.01);
+      schedule(live, context().currentTime + 0.01, charge);
     }
 
-    function render(seconds = 3.2, sampleRate = 44_100) {
+    function render(charge = CHARGE / 1000, seconds = 3.6, sampleRate = 44_100) {
       const offline = new OfflineAudioContext(2, Math.ceil(seconds * sampleRate), sampleRate);
-      schedule(graph(offline), 0.01);
+      schedule(graph(offline), 0.01, charge);
       return offline.startRendering();
     }
 
@@ -425,11 +507,12 @@ if (!window.t3SettleBoom) {
   })();
 
   window.t3SettleBoom = {
-    // Plays the effect at a point (default: the middle of the window). `pauseAt` freezes it at
-    // that many milliseconds, for screenshots.
-    play: ({ x = innerWidth / 2, y = innerHeight / 2, title = "", pauseAt = null } = {}) => boom({ x, y, title, pauseAt }),
+    // Plays the effect on a thread's row, or at a point (default: the middle of the window).
+    // `pauseAt` freezes it at that many milliseconds, for screenshots.
+    play: ({ threadId = null, x = innerWidth / 2, y = innerHeight / 2, title = "", pauseAt = null } = {}) =>
+      boom({ ...(threadId ? target(threadId) : { x, y, title }), pauseAt }),
     clear: () => {
-      for (const scene of scenes) scene.label.node.remove();
+      scenes.forEach(removeScene);
       scenes = [];
     },
     get muted() {

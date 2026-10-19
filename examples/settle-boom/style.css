@@ -7,6 +7,16 @@
   z-index: 2147483646;
 }
 
+.t3-settle-boom-ghost {
+  position: fixed;
+  z-index: 2147483645;
+  pointer-events: none;
+  list-style: none;
+  border-radius: var(--radius, 0.625rem);
+  transform-origin: center;
+  will-change: transform, filter, opacity;
+}
+
 .t3-settle-boom-label {
   position: fixed;
   z-index: 2147483647;
