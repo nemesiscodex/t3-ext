@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
+const { SENTINEL, frameworkBinary } = require("../src/fuses.cjs");
 
 const CLI = path.join(__dirname, "..", "bin", "t3ext.cjs");
 const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8" });
@@ -31,7 +32,7 @@ test("install-launcher --dry-run prints the bundle without writing it", (t) => {
   const bundle = path.join(root, "T3 Code+.app");
   assert.match(result.stdout, new RegExp(`Would create ${bundle.replace(/[.+]/g, "\\$&")}`));
   assert.match(result.stdout, /copied from .*icon\.icns/);
-  assert.match(result.stdout, /ELECTRON_RUN_AS_NODE=1 "\$EXE" "\$CLI" launch --app "\$APP"/);
+  assert.match(result.stdout, /ELECTRON_RUN_AS_NODE=1 "\$NODE" "\$CLI" launch --app "\$APP"/);
   assert.equal(fs.existsSync(bundle), false, "dry run writes nothing");
 });
 
@@ -105,26 +106,43 @@ test("the agent script runs attach on T3's binary as node, falls back to the rec
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin);
   const app = path.join(root, "Stub.app");
-  fs.mkdirSync(path.join(app, "Contents", "MacOS"), { recursive: true });
+  const stub = path.join(app, "Contents", "MacOS", "Stub");
+  fs.mkdirSync(path.dirname(stub), { recursive: true });
   fs.writeFileSync(path.join(app, "Contents", "Info.plist"), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>Stub</string></dict></plist>');
+  const setRunAsNode = (bit) => {
+    fs.mkdirSync(path.dirname(frameworkBinary(app)), { recursive: true });
+    fs.writeFileSync(frameworkBinary(app), Buffer.concat([SENTINEL, Buffer.from([1, 1]), Buffer.from(bit)]));
+  };
   const calls = path.join(root, "calls");
   const recorder = (name, status) => `#!/bin/sh\necho "${name} $*" >> ${JSON.stringify(calls)}\nexit ${status}\n`;
-  fs.writeFileSync(path.join(app, "Contents", "MacOS", "Stub"), recorder("app-binary", 0), { mode: 0o755 });
-  fs.writeFileSync(path.join(bin, "fallback-node"), recorder("fallback", 3), { mode: 0o755 });
-  const shim = () => spawnSync("/bin/sh", ["-c", script.replaceAll("/usr/bin/osascript", path.join(bin, "osascript")).replaceAll("sleep 3", "sleep 0"), "t3ext-reattach", app, "/cli.cjs", path.join(bin, "fallback-node"), "5000"], { encoding: "utf8" });
+  fs.writeFileSync(stub, recorder("app-binary", 0), { mode: 0o755 });
+  // A real node for the fuse check (`-e`), a recorder for the CLI run.
+  fs.writeFileSync(path.join(bin, "fallback-node"), `#!/bin/sh\n[ "$1" = "-e" ] && exec ${JSON.stringify(process.execPath)} "$@"\n${recorder("fallback", 4).slice(10)}`, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, "osascript"), recorder("notify", 0), { mode: 0o755 });
+  const agent = () => {
+    fs.rmSync(calls, { force: true });
+    const shimmed = script.replaceAll("/usr/bin/osascript", path.join(bin, "osascript")).replaceAll("sleep 3", "sleep 0");
+    const result = spawnSync("/bin/sh", ["-c", shimmed, "t3ext-reattach", app, CLI, path.join(bin, "fallback-node"), "5000"], { encoding: "utf8" });
+    return { ...result, calls: fs.readFileSync(calls, "utf8").trim().split("\n") };
+  };
+  const attach = `${CLI} attach --app ${app} --wait 5000`;
+  const notify = 'notify -e display notification "Extensions were not re-attached after T3 Code restarted. See ~/Library/Logs/t3ext.log" with title "t3ext"';
 
-  let result = shim();
+  setRunAsNode("1");
+  let result = agent();
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(fs.readFileSync(calls, "utf8").trim().split("\n"), ["app-binary -e 0", "app-binary /cli.cjs attach --app " + app + " --wait 5000"]);
+  assert.deepEqual(result.calls, ["app-binary -e 0", `app-binary ${attach}`]);
 
-  fs.rmSync(calls);
-  fs.chmodSync(path.join(app, "Contents", "MacOS", "Stub"), 0o644);
-  result = shim();
-  assert.equal(result.status, 3, "the CLI's failure is the agent's exit status");
-  const lines = fs.readFileSync(calls, "utf8").trim().split("\n");
-  assert.deepEqual(lines.slice(0, 2), ["fallback /cli.cjs attach --app " + app + " --wait 5000", "notify -e display notification \"Extensions were not re-attached after T3 Code restarted. See ~/Library/Logs/t3ext.log\" with title \"t3ext\""]);
+  fs.chmodSync(stub, 0o644);
+  result = agent();
+  assert.equal(result.status, 4, "the CLI's failure is the agent's exit status");
+  assert.deepEqual(result.calls, [`fallback ${attach}`, notify], "the binary that cannot run is never run as the CLI");
   assert.match(result.stdout, /cannot run as node; using .*fallback-node/);
+
+  fs.chmodSync(stub, 0o755);
+  setRunAsNode("0");
+  result = agent();
+  assert.deepEqual(result.calls, [`fallback ${attach}`, notify], "with RunAsNode off, T3's binary is never started");
 });
 
 test("uninstall-agent --dry-run names the job and the plist without touching either", (t) => {

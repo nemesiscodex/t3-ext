@@ -8,6 +8,7 @@ const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { pickNodeShell } = require("./pick-node.cjs");
 
 const LABEL = "dev.t3ext.reattach";
 const WAIT_MS = 120_000;
@@ -25,12 +26,7 @@ function paths(home = os.homedir()) {
 // binary gets a few tries before the fallback.
 const SCRIPT = `APP="$1"; CLI="$2"; FALLBACK_NODE="$3"; WAIT_MS="$4"
 echo "$(date) $APP/Contents/Info.plist changed; attaching the extension host"
-NODE=""
-for attempt in 1 2 3 4 5 6 7 8 9 10; do
-  EXE="$APP/Contents/MacOS/$(/usr/bin/plutil -extract CFBundleExecutable raw "$APP/Contents/Info.plist" 2>/dev/null)"
-  if ELECTRON_RUN_AS_NODE=1 "$EXE" -e 0 >/dev/null 2>&1; then NODE="$EXE"; break; fi
-  sleep 3
-done
+${pickNodeShell({ attempts: 10 })}
 if [ -n "$NODE" ]; then
   ELECTRON_RUN_AS_NODE=1 "$NODE" "$CLI" attach --app "$APP" --wait "$WAIT_MS"
 else

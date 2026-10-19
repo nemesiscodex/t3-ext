@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { plistValue } = require("./launcher.cjs");
+const { pickNodeShell } = require("./pick-node.cjs");
 
 const NAME = "T3 Code+";
 const BUNDLE_ID = "dev.t3ext.launcher";
@@ -26,12 +27,12 @@ CLI=${shellQuote(cliPath)}
 FALLBACK_NODE=${shellQuote(fallbackNode)}
 LOG="$HOME/Library/Logs/t3ext.log"
 mkdir -p "$(dirname "$LOG")"
-EXE="$APP/Contents/MacOS/$(/usr/bin/plutil -extract CFBundleExecutable raw "$APP/Contents/Info.plist")"
+${pickNodeShell()}
 
-if ELECTRON_RUN_AS_NODE=1 "$EXE" -e 0 >/dev/null 2>&1; then
-  ELECTRON_RUN_AS_NODE=1 "$EXE" "$CLI" launch --app "$APP" $T3EXT_LAUNCH_ARGS >>"$LOG" 2>&1
+if [ -n "$NODE" ]; then
+  ELECTRON_RUN_AS_NODE=1 "$NODE" "$CLI" launch --app "$APP" $T3EXT_LAUNCH_ARGS >>"$LOG" 2>&1
 else
-  echo "$(date) $EXE cannot run as node; using $FALLBACK_NODE" >>"$LOG"
+  echo "$(date) $APP cannot run as node; using $FALLBACK_NODE" >>"$LOG"
   "$FALLBACK_NODE" "$CLI" launch --app "$APP" $T3EXT_LAUNCH_ARGS >>"$LOG" 2>&1
 fi
 STATUS=$?
