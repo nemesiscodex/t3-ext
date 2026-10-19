@@ -19,7 +19,7 @@ You start T3 Code through a small launcher app, **T3 Code+**. The launcher start
 | running without the host | sends `SIGUSR1`, loads the host over the inspector on port 9229, then brings T3 to the front | the same, but never brings T3 to the front |
 | running with the host | brings it to the front | does nothing |
 
-Both commands hold a per-app lock while they act, so two launches at once start or attach only once. Every branch of `launch` ends with T3 Code in front.
+Both commands hold a per-app lock while they act, so two launches at once start or attach only once. `launch` brings T3 Code to the front whenever it is running when `launch` ends, even after a failure.
 
 ### Starting T3 Code
 
@@ -79,9 +79,9 @@ When T3 Code updates itself, it restarts without extensions. The LaunchAgent put
 node bin/t3ext.cjs install-agent
 ```
 
-This writes `~/Library/LaunchAgents/dev.t3ext.reattach.plist` and loads it with `launchctl bootstrap gui/$UID`. The agent watches T3's `Contents/Info.plist`, which an update replaces. When the file changes, the agent runs `t3ext attach --wait 120000`. That waits up to two minutes for T3 to start again, then attaches. If T3 does not start in that time (for example, it updated while closed), the agent exits quietly. It never brings T3 to the front, and it does nothing when the host is already loaded. It runs on T3's own binary as Node, like T3 Code+. While an update is still replacing the app, it retries for about 30 seconds, then uses the `node` you ran `install-agent` with. Output goes to `~/Library/Logs/t3ext.log`. You get a notification only when attaching fails. Add `--dry-run` to print the plist and the `launchctl` commands without running them.
+This writes `~/Library/LaunchAgents/dev.t3ext.reattach.plist` and loads it with `launchctl bootstrap gui/$UID`. The agent watches T3's `Contents/Info.plist`, which an update replaces. When the file changes, the agent runs `t3ext attach --wait 120000`. That waits up to two minutes for T3 to start again, then attaches. Within those two minutes it also keeps waiting if T3 quits and starts again, and retries while the update is still replacing files. If T3 does not start in that time (for example, it updated while closed), the agent exits quietly. It never brings T3 to the front, and it does nothing when the host is already loaded. It runs on T3's own binary as Node, like T3 Code+. While an update is still replacing the app, it retries for about 30 seconds, then uses the `node` you ran `install-agent` with. Both first read T3's `RunAsNode` fuse with that `node`: with the fuse off, T3's binary would start the T3 app instead of Node, so they skip it. Output goes to `~/Library/Logs/t3ext.log`. You get a notification only when attaching fails. Add `--dry-run` to print the plist and the `launchctl` commands without running them.
 
-The agent does not react to a start from the Dock, Spotlight or a link. Run `t3ext attach`, or open T3 Code+, to load extensions then.
+The tests check the plist and run the agent's command by hand. A real launchd trigger on a real update has not been tested. The agent does not react to a start from the Dock, Spotlight or a link. Run `t3ext attach`, or open T3 Code+, to load extensions then.
 
 To remove the agent:
 
