@@ -1,93 +1,98 @@
 #!/usr/bin/env node
 "use strict";
 
-const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
-const patcher = require("../src/patcher.cjs");
-const launchAgent = require("../src/launch-agent.cjs");
+const { launch } = require("../src/launcher.cjs");
+const launcherApp = require("../src/launcher-app.cjs");
+const { targets, waitFor } = require("../src/cdp.cjs");
 
 const DEFAULT_APP = "/Applications/T3 Code (Nightly).app";
-const USAGE = `Usage: t3ext <command> [--app <path>] [--dry-run]
-
-Commands:
-  patch            Add the extension loader to the app (safe to rerun)
-  unpatch          Restore the original app.asar from the backup
-  status           Show app version, patch state, backup, and launch agent
-  install-agent    Install a LaunchAgent that repatches after app updates (--dry-run prints it)
-  uninstall-agent  Remove that LaunchAgent
+const USAGE = `Usage:
+  t3ext launch [--app <path>] [--env KEY=VALUE]... [--timeout <ms>] [-- <app args>]
+      Start T3 Code with extensions loaded. If it is already running, bring it to the front.
+  t3ext install-launcher [--app <path>] [--dest <dir>] [--dry-run]
+      Build "T3 Code+.app" in <dir> (default ~/Applications) that runs "t3ext launch".
 
 --app defaults to "${DEFAULT_APP}".`;
 
 function parseArgs(argv) {
-  const options = { command: undefined, app: DEFAULT_APP, dryRun: false };
-  for (let i = 0; i < argv.length; i++) {
+  const options = { command: argv[0], app: DEFAULT_APP, env: {}, appArgs: [], timeoutMs: 20_000, dest: undefined, dryRun: false };
+  const value = (i, flag) => {
+    if (argv[i + 1] === undefined) throw new Error(`${flag} needs a value`);
+    return argv[i + 1];
+  };
+  for (let i = 1; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--app") {
-      if (!argv[i + 1]) throw new Error("--app needs a path");
-      options.app = argv[++i];
-    } else if (arg === "--dry-run") options.dryRun = true;
-    else if (arg === "-h" || arg === "--help") options.command = "help";
-    else if (!options.command) options.command = arg;
-    else throw new Error(`Unexpected argument: ${arg}`);
+    if (arg === "--") {
+      options.appArgs = argv.slice(i + 1);
+      break;
+    } else if (arg === "--app") options.app = value(i++, arg);
+    else if (arg === "--dest") options.dest = path.resolve(value(i++, arg));
+    else if (arg === "--timeout") options.timeoutMs = Number(value(i++, arg));
+    else if (arg === "--dry-run") options.dryRun = true;
+    else if (arg === "--env") {
+      const pair = value(i++, arg);
+      const eq = pair.indexOf("=");
+      if (eq < 1) throw new Error(`--env expects KEY=VALUE, got "${pair}"`);
+      options.env[pair.slice(0, eq)] = pair.slice(eq + 1);
+    } else throw new Error(`Unexpected argument: ${arg}`);
   }
+  if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) throw new Error("--timeout must be a positive number of milliseconds");
   options.app = path.resolve(options.app.replace(/\/+$/, ""));
   return options;
 }
 
-function appVersion(infoPlist) {
-  try {
-    return execFileSync("plutil", ["-extract", "CFBundleShortVersionString", "raw", infoPlist], { encoding: "utf8" }).trim();
-  } catch {
-    return "unknown";
-  }
+function requireApp(app) {
+  if (!fs.existsSync(path.join(app, "Contents", "Info.plist"))) throw new Error(`${app} is not an app bundle`);
 }
 
 const commands = {
-  help() {
-    console.log(USAGE);
-  },
-  patch({ app }) {
-    const result = patcher.patch(app);
-    const messages = {
-      patched: "Patched. Restart T3 Code to load extensions.",
-      "already-patched": "Already patched with the current shim. Nothing to do.",
-      repatched: "Repatched from the backup with the updated shim. Restart T3 Code to apply.",
-    };
-    console.log(`${messages[result.action]} (shim ${result.hash.slice(0, 12)}, ${app})`);
-  },
-  unpatch({ app }) {
-    const result = patcher.unpatch(app);
-    console.log(result.action === "unpatched" ? `Restored the original app.asar (${app}).` : `Not patched. Nothing to do (${app}).`);
-  },
-  status({ app }) {
-    const state = patcher.inspect(app);
-    const archive = state.archive;
-    const lines = [
-      ["app", app],
-      ["version", appVersion(state.paths.infoPlist)],
-      ["patched", archive.kind === "patched" ? "yes" : "no"],
-      ["shim", archive.kind === "patched" ? (archive.hash === state.shimHash ? "current" : `outdated (run patch)`) : "-"],
-      ["backup", state.backup.kind === "missing" ? "missing" : `present (${state.backup.kind})`],
-      ["agent", launchAgent.isInstalled() ? `installed (${launchAgent.plistPath()})` : "not installed"],
-    ];
-    for (const [key, value] of lines) console.log(`${key.padEnd(8)} ${value}`);
-  },
-  "install-agent"({ app, dryRun }) {
-    if (!fs.existsSync(app)) throw new Error(`${app} does not exist`);
-    const options = { appPath: app, cliPath: __filename };
-    if (dryRun) {
-      process.stdout.write(launchAgent.plist(options));
-      return;
+  async launch({ app, env, appArgs, timeoutMs }) {
+    requireApp(app);
+    const result = await launch({ app, env, appArgs, timeoutMs });
+    const stamp = new Date().toISOString();
+    switch (result.kind) {
+      case "activated":
+        console.log(`${stamp} ${app} is already running (pid ${result.pid}); brought it to the front. Extensions load on the next start through t3ext launch.`);
+        return 0;
+      case "injected": {
+        const closed = await waitFor("the inspector to close", async () => !(await targets(result.port).then(() => true, () => false)), { timeoutMs: 5000 }).then(
+          () => "closed",
+          () => "STILL OPEN",
+        );
+        console.log(`${stamp} Started ${app} (pid ${result.pid}) with the extension host. Inspector 127.0.0.1:${result.port} ${closed}.`);
+        return closed === "closed" ? 0 : 1;
+      }
+      case "no-inspector":
+        console.error(
+          `${stamp} ${app} did not open its inspector on 127.0.0.1:${result.port} (${result.error}). Extensions were not loaded. ` +
+            "If T3 Code is open but blank, it is waiting for a debugger: quit it and launch again.",
+        );
+        return 1;
+      case "inject-failed":
+        console.error(`${stamp} ${app} (pid ${result.pid}) continues without extensions; loading the host failed: ${result.error}`);
+        return 1;
     }
-    console.log(`Installed ${launchAgent.install(options)}. It runs "patch" at login and whenever the app's Info.plist changes.`);
   },
-  "uninstall-agent"() {
-    console.log(`Removed ${launchAgent.uninstall()}.`);
+  async "install-launcher"({ app, dest, dryRun }) {
+    requireApp(app);
+    const version = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")).version;
+    const planned = launcherApp.plan({ app, destDir: dest, cliPath: __filename, version });
+    if (dryRun) {
+      console.log(`Would create ${planned.bundle} (ad-hoc signed):`);
+      for (const file of planned.files) {
+        console.log(`\n== ${file.path}${file.copyFrom ? ` (copied from ${file.copyFrom})` : ""}`);
+        if (file.content) process.stdout.write(file.content);
+      }
+      return 0;
+    }
+    console.log(`Created ${launcherApp.build(planned)}. Open it instead of T3 Code to load extensions.`);
+    return 0;
   },
 };
 
-function main(argv) {
+async function main(argv) {
   let options;
   try {
     options = parseArgs(argv);
@@ -97,16 +102,17 @@ function main(argv) {
   }
   const command = commands[options.command];
   if (!command) {
-    console.error(options.command ? `Unknown command: ${options.command}\n\n${USAGE}` : USAGE);
-    return 2;
+    console.error(USAGE);
+    return options.command === "help" || options.command === "--help" ? 0 : 2;
   }
   try {
-    command(options);
-    return 0;
+    return await command(options);
   } catch (error) {
     console.error(`t3ext ${options.command}: ${error.message}`);
     return 1;
   }
 }
 
-process.exitCode = main(process.argv.slice(2));
+main(process.argv.slice(2)).then((code) => {
+  process.exitCode = code;
+});

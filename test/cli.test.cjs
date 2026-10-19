@@ -6,54 +6,55 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
-const asar = require("../src/asar.cjs");
 
 const CLI = path.join(__dirname, "..", "bin", "t3ext.cjs");
-
-function fixtureApp() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "t3ext-cli-"));
-  const app = path.join(root, "Fixture App.app");
-  fs.mkdirSync(path.join(app, "Contents", "Resources"), { recursive: true });
-  asar.create(path.join(app, "Contents", "Resources", "app.asar"), new Map([["package.json", Buffer.from('{"main":"main.js"}')], ["main.js", Buffer.from("")]]));
-  fs.writeFileSync(
-    path.join(app, "Contents", "Info.plist"),
-    '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>9.9.9</string></dict></plist>',
-  );
-  return app;
-}
-
 const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8" });
 
-test("patch, patch again, status, unpatch report each state", () => {
-  const app = fixtureApp();
-  assert.match(run("patch", "--app", app).stdout, /^Patched\./);
-  assert.match(run("patch", "--app", app).stdout, /^Already patched/);
-  const status = run("status", "--app", app).stdout;
-  assert.match(status, /version +9\.9\.9/);
-  assert.match(status, /patched +yes/);
-  assert.match(status, /shim +current/);
-  assert.match(status, /backup +present \(unpatched\)/);
-  assert.match(run("unpatch", "--app", app).stdout, /^Restored the original app\.asar/);
-  assert.match(run("status", "--app", app).stdout, /patched +no/);
+function fixtureApp() {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "t3ext-cli-")));
+  const app = path.join(root, "Fixture's App.app");
+  fs.mkdirSync(path.join(app, "Contents", "Resources"), { recursive: true });
+  fs.writeFileSync(
+    path.join(app, "Contents", "Info.plist"),
+    '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIconFile</key><string>icon.icns</string><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>',
+  );
+  fs.writeFileSync(path.join(app, "Contents", "Resources", "icon.icns"), "icns");
+  return { root, app };
+}
+
+test("install-launcher --dry-run prints the bundle without writing it", () => {
+  const { root, app } = fixtureApp();
+  const result = run("install-launcher", "--dry-run", "--app", app, "--dest", root);
+  assert.equal(result.status, 0, result.stderr);
+  const bundle = path.join(root, "T3 Code+.app");
+  assert.match(result.stdout, new RegExp(`Would create ${bundle.replace(/[.+]/g, "\\$&")}`));
+  assert.match(result.stdout, /copied from .*icon\.icns/);
+  assert.match(result.stdout, /ELECTRON_RUN_AS_NODE=1 "\$EXE" "\$CLI" launch --app "\$APP"/);
+  assert.equal(fs.existsSync(bundle), false, "dry run writes nothing");
 });
 
-test("install-agent --dry-run prints a valid plist that repatches on Info.plist changes", () => {
-  const app = fixtureApp();
-  const result = run("install-agent", "--dry-run", "--app", app);
+test("install-launcher builds a valid ad-hoc signed app that quotes odd paths", () => {
+  const { root, app } = fixtureApp();
+  const result = run("install-launcher", "--app", app, "--dest", root);
   assert.equal(result.status, 0, result.stderr);
-  const json = JSON.parse(execFileSync("plutil", ["-convert", "json", "-o", "-", "-"], { input: result.stdout, encoding: "utf8" }));
-  assert.equal(json.Label, "dev.t3ext.repatch");
-  assert.deepEqual(json.ProgramArguments, [process.execPath, CLI, "patch", "--app", app]);
-  assert.ok(path.isAbsolute(json.ProgramArguments[0]) && path.isAbsolute(json.ProgramArguments[1]), "absolute node and CLI paths");
-  assert.deepEqual(json.WatchPaths, [path.join(app, "Contents", "Info.plist")]);
-  assert.equal(json.RunAtLoad, true);
-  assert.equal(json.StandardOutPath, path.join(os.homedir(), "Library", "Logs", "t3ext.log"));
-  assert.equal(json.StandardErrorPath, json.StandardOutPath);
+  const bundle = path.join(root, "T3 Code+.app");
+  execFileSync("codesign", ["--verify", "--strict", bundle]);
+  const info = JSON.parse(execFileSync("plutil", ["-convert", "json", "-o", "-", path.join(bundle, "Contents", "Info.plist")], { encoding: "utf8" }));
+  assert.equal(info.CFBundleExecutable, "t3code-plus");
+  assert.equal(info.CFBundleIconFile, "icon.icns");
+  assert.equal(info.LSUIElement, true);
+  const script = path.join(bundle, "Contents", "MacOS", "t3code-plus");
+  assert.ok(fs.statSync(script).mode & 0o111, "launcher script is executable");
+  execFileSync("sh", ["-n", script]);
+  const resolved = execFileSync("sh", ["-c", `eval "$(sed -n '/^DEFAULT_APP=/,/^APP=/p' "$1")"; printf %s "$APP"`, "sh", script], { encoding: "utf8" });
+  assert.equal(resolved, app, "baked app path survives shell quoting");
+  assert.equal(fs.readFileSync(path.join(bundle, "Contents", "Resources", "icon.icns"), "utf8"), "icns", "icon copied from the app");
 });
 
 test("bad arguments exit 2 with usage; a missing app exits 1", () => {
   assert.equal(run("frobnicate").status, 2);
-  const missing = run("status", "--app", "/nonexistent/X.app");
+  assert.equal(run("launch", "--env", "NOEQUALS").status, 2);
+  const missing = run("launch", "--app", "/nonexistent/X.app");
   assert.equal(missing.status, 1);
-  assert.match(missing.stderr, /has no Contents\/Resources\/app\.asar/);
+  assert.match(missing.stderr, /is not an app bundle/);
 });

@@ -5,9 +5,9 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
-const { createRegistry } = require("../shim/registry.cjs");
+const { createRegistry } = require("../host/registry.cjs");
 
-const BUILTIN_DIR = path.join(__dirname, "..", "shim", "builtin");
+const BUILTIN_DIR = path.join(__dirname, "..", "host", "builtin");
 
 function writeExtension(dir, files) {
   fs.mkdirSync(dir, { recursive: true });
