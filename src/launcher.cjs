@@ -42,12 +42,13 @@ function instance(app) {
   return null;
 }
 
-function runningPid(app) {
-  return instance(app)?.pid ?? null;
+function runningPid(app, find = instance) {
+  return find(app)?.pid ?? null;
 }
 
-async function observe(app) {
-  const running = instance(app);
+// `find` is the LaunchServices lookup; tests pass their own for a process LaunchServices never sees.
+async function observe(app, find = instance) {
+  const running = find(app);
   if (!running) return { state: "stopped" };
   if (await hostAnswers(running.pid)) return { state: "hosted", pid: running.pid };
   return { state: running.ready ? "bare" : "starting", pid: running.pid };
@@ -133,7 +134,17 @@ function evaluated({ result, exceptionDetails }) {
 
 const failed = (reason, pid, message) => ({ kind: "failed", reason, pid, message });
 
-async function startWithHost({ app, env, appArgs, timeoutMs, hostEntry }) {
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// For when the host expression never ran: ask the process to close its inspector anyway, so the
+// port does not stay open, and let a process paused by --inspect-brk continue.
+async function closeInspector(cdp, { resume = false } = {}) {
+  const close = { expression: 'setImmediate(() => require("node:inspector").close()), 0', includeCommandLineAPI: true };
+  await cdp.send("Runtime.evaluate", close, { timeoutMs: 2000 }).catch(() => {});
+  if (resume) await cdp.send("Debugger.resume", {}, { timeoutMs: 2000 }).catch(() => {});
+}
+
+async function startWithHost({ app, env, appArgs, timeoutMs, hostEntry, find }) {
   const port = await freePort();
   openApp(app, { env, appArgs: [`--inspect-brk=127.0.0.1:${port}`, ...appArgs] });
 
@@ -143,15 +154,16 @@ async function startWithHost({ app, env, appArgs, timeoutMs, hostEntry }) {
   } catch (error) {
     return failed(
       "no-inspector",
-      runningPid(app),
+      runningPid(app, find),
       `${app} did not open its inspector on 127.0.0.1:${port} (${error.message}). Extensions were not loaded. ` +
         "If T3 Code is open but blank, it is waiting for a debugger: quit it and launch again.",
     );
   }
 
   let outcome;
-  const cdp = await Cdp.connect(target.webSocketDebuggerUrl);
+  let cdp;
   try {
+    cdp = await Cdp.connect(target.webSocketDebuggerUrl, { timeoutMs });
     await cdp.send("Debugger.enable");
     await cdp.send("Runtime.runIfWaitingForDebugger");
     const paused = await cdp.event("Debugger.paused", timeoutMs);
@@ -160,17 +172,18 @@ async function startWithHost({ app, env, appArgs, timeoutMs, hostEntry }) {
     );
   } catch (error) {
     outcome = { error: error.message };
+    if (cdp) await closeInspector(cdp);
   } finally {
-    await cdp.send("Debugger.resume").catch(() => {});
-    cdp.close();
+    await cdp?.send("Debugger.resume", {}, { timeoutMs: 2000 }).catch(() => {});
+    cdp?.close();
   }
-  const pid = runningPid(app);
+  const pid = runningPid(app, find);
   if (outcome.error) return failed("inject-failed", pid, `${app} (pid ${pid}) continues without extensions; loading the host failed: ${outcome.error}`);
   if (!(await inspectorClosed(port))) return failed("inspector-open", pid, `Started ${app} (pid ${pid}) with the extension host, but its inspector on 127.0.0.1:${port} is still open.`);
   return { kind: "started", pid, port };
 }
 
-async function attachHost({ app, hostEntry }, pid) {
+async function attachHost({ app, hostEntry, timeoutMs }, pid) {
   if (!(await portFree(SIGNAL_PORT))) {
     return failed(
       "port-busy",
@@ -179,7 +192,12 @@ async function attachHost({ app, hostEntry }, pid) {
         `so the extension host was not loaded. ${app} (pid ${pid}) keeps running. Free the port and try again.`,
     );
   }
-  process.kill(pid, "SIGUSR1");
+  try {
+    process.kill(pid, "SIGUSR1");
+  } catch (error) {
+    if (error.code === "ESRCH") return null;
+    throw error;
+  }
   let target;
   try {
     target = await waitFor("the inspector", async () => (await targets(SIGNAL_PORT))[0], { timeoutMs: INSPECTOR_OPEN_MS, intervalMs: 100 });
@@ -193,29 +211,33 @@ async function attachHost({ app, hostEntry }, pid) {
   }
 
   let outcome;
-  const cdp = await Cdp.connect(target.webSocketDebuggerUrl);
+  let cdp;
   try {
+    cdp = await Cdp.connect(target.webSocketDebuggerUrl, { timeoutMs });
     outcome = evaluated(
       await cdp.send("Runtime.evaluate", { expression: hostExpression(hostEntry, pid), includeCommandLineAPI: true, returnByValue: true }),
     );
   } catch (error) {
     outcome = { error: error.message };
+    if (cdp) await closeInspector(cdp);
   } finally {
-    cdp.close();
+    cdp?.close();
   }
-  if (outcome.error) return failed("inject-failed", pid, `Loading the extension host into ${app} (pid ${pid}) failed; T3 keeps running without it: ${outcome.error}`);
-  if (!(await inspectorClosed(SIGNAL_PORT))) {
-    return failed("inspector-open", pid, `Loaded the extension host into ${app} (pid ${pid}), but its inspector on 127.0.0.1:${SIGNAL_PORT} is still open.`);
-  }
+  const closed = await inspectorClosed(SIGNAL_PORT);
+  const stillOpen = closed ? "" : ` Its inspector on 127.0.0.1:${SIGNAL_PORT} is still open.`;
+  if (outcome.error) return failed("inject-failed", pid, `Loading the extension host into ${app} (pid ${pid}) failed; T3 keeps running without it: ${outcome.error}.${stillOpen}`);
+  if (!closed) return failed("inspector-open", pid, `Loaded the extension host into ${app} (pid ${pid}), but its inspector on 127.0.0.1:${SIGNAL_PORT} is still open.`);
+  // The host was already running but its presence socket did not answer in time.
+  if (!outcome.value.started) return { kind: "already-hosted", pid };
   return { kind: "attached", pid, reloaded: outcome.value.reloaded };
 }
 
-async function untilReady({ app, timeoutMs }, pid) {
+async function untilReady({ app, timeoutMs, find }, pid) {
   try {
     await waitFor(
       "T3 to finish starting",
       () => {
-        const now = instance(app);
+        const now = find(app);
         return now?.pid !== pid || now.ready;
       },
       { timeoutMs, intervalMs: 250 },
@@ -255,6 +277,31 @@ function isAlive(pid) {
   }
 }
 
+function lockHolder(file) {
+  try {
+    return Number(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+// Two waiters can both find the same dead holder. Moving the lock aside first means only the one
+// that moved the dead holder's file deletes it; a live lock moved aside by mistake goes back.
+function removeIfStillHeldBy(lock, holder) {
+  const aside = `${lock}.stale.${process.pid}`;
+  try {
+    fs.renameSync(lock, aside);
+  } catch {
+    return;
+  }
+  if (lockHolder(aside) !== holder) {
+    try {
+      fs.linkSync(aside, lock);
+    } catch {}
+  }
+  fs.rmSync(aside, { force: true });
+}
+
 // One launch or attach per app at a time. Otherwise two launchers both see "stopped" (or "bare"),
 // and the second waits for an inspector that never opens. The lock file holds the owner's pid;
 // it is linked into place whole, so a reader never sees it half written.
@@ -267,20 +314,18 @@ async function acquireLaunchLock(app, timeoutMs) {
     fs.writeFileSync(tmp, String(process.pid));
     try {
       fs.linkSync(tmp, lock);
-      return () => fs.rmSync(lock, { force: true });
+      return () => {
+        if (lockHolder(lock) === process.pid) fs.rmSync(lock, { force: true });
+      };
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
     } finally {
       fs.rmSync(tmp, { force: true });
     }
-    let holder;
-    try {
-      holder = Number(fs.readFileSync(lock, "utf8"));
-    } catch {
-      continue;
-    }
+    const holder = lockHolder(lock);
+    if (holder === null) continue;
     if (!isAlive(holder)) {
-      fs.rmSync(lock, { force: true });
+      removeIfStillHeldBy(lock, holder);
       continue;
     }
     if (Date.now() > deadline) throw new Error(`Another launch of ${app} (pid ${holder}) is still running; lock ${lock}`);
@@ -288,38 +333,59 @@ async function acquireLaunchLock(app, timeoutMs) {
   }
 }
 
-// Result: { kind: "started", pid, port } | { kind: "attached", pid, reloaded }
-//       | { kind: "already-hosted", pid } | { kind: "not-running" }
-//       | { kind: "failed", reason, pid, message }
-// reason: fuse-off | port-busy | no-inspector | inject-failed | inspector-open | not-ready
-async function run({ app, mode, waitMs = 0, timeoutMs = 20_000, env = {}, appArgs = [], hostEntry = HOST_ENTRY }) {
-  // Waiting for T3 to appear holds no lock, so a T3 Code+ launch meanwhile is never blocked.
-  if (waitMs > 0) await waitFor("T3 to start", () => runningPid(app), { timeoutMs: waitMs, intervalMs: 500 }).catch(() => {});
-
+async function runLocked({ app, mode, timeoutMs, env, appArgs, hostEntry, find }) {
+  if (!fs.existsSync(path.join(app, "Contents", "Info.plist"))) throw new Error(`${app} is not an app bundle`);
   const release = await acquireLaunchLock(app, timeoutMs * 3);
-  let result;
   try {
-    // Read after any wait: the T3 that started meanwhile may be a new build with the fuse off.
+    // Read right before acting: a T3 that started during --wait may be a new build with the fuse off.
     const inspectFuse = readFuses(app).fuses.EnableNodeCliInspectArguments;
     if (inspectFuse !== "on") {
       if (mode === "launch") openApp(app, { env, appArgs });
-      result = failed(
+      return failed(
         "fuse-off",
-        runningPid(app),
+        runningPid(app, find),
         `${app} has its EnableNodeCliInspectArguments Electron fuse ${inspectFuse}, so neither --inspect-brk nor SIGUSR1 can open its inspector. ` +
           "t3ext cannot load extensions into this build; T3 runs normally without them.",
       );
     }
-    const context = { app, env, appArgs, timeoutMs, hostEntry };
-    while (!result) {
-      const observed = await observe(app);
-      result = await STEPS[mode][observed.state](context, observed);
+    const context = { app, env, appArgs, timeoutMs, hostEntry, find };
+    for (;;) {
+      const observed = await observe(app, find);
+      const result = await STEPS[mode][observed.state](context, observed);
+      if (result) return result;
     }
   } finally {
     release();
   }
-  if (mode === "launch" && runningPid(app)) openApp(app);
-  return result;
 }
 
-module.exports = { run, observe, runningPid, plistValue, HOST_ENTRY, SIGNAL_PORT };
+// Result: { kind: "started", pid, port } | { kind: "attached", pid, reloaded }
+//       | { kind: "already-hosted", pid } | { kind: "not-running" }
+//       | { kind: "failed", reason, pid, message }
+// reason: fuse-off | port-busy | no-inspector | inject-failed | inspector-open | not-ready
+// With waitMs, attach keeps going until that deadline: T3 not running yet, T3 quitting and
+// starting again (an update relaunches it), and errors from a bundle that an update is swapping.
+async function run({ app, mode, waitMs = 0, timeoutMs = 20_000, env = {}, appArgs = [], hostEntry = HOST_ENTRY, find = instance }) {
+  const deadline = Date.now() + waitMs;
+  try {
+    for (;;) {
+      try {
+        // Waiting for T3 to appear holds no lock, so a T3 Code+ launch meanwhile is never blocked.
+        if (waitMs > 0) await waitFor("T3 to start", () => runningPid(app, find), { timeoutMs: Math.max(1, deadline - Date.now()), intervalMs: 500 }).catch(() => {});
+        const result = await runLocked({ app, mode, timeoutMs, env, appArgs, hostEntry, find });
+        if (result.kind !== "not-running" || Date.now() >= deadline) return result;
+      } catch (error) {
+        if (Date.now() >= deadline) throw error;
+        await sleep(1000);
+      }
+    }
+  } finally {
+    if (mode === "launch") {
+      try {
+        if (runningPid(app, find)) openApp(app);
+      } catch {}
+    }
+  }
+}
+
+module.exports = { run, observe, runningPid, plistValue, acquireLaunchLock, removeIfStillHeldBy, HOST_ENTRY, SIGNAL_PORT };

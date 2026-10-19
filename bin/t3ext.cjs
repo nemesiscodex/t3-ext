@@ -79,7 +79,6 @@ const SUCCESS = {
 };
 
 async function drive(mode, options) {
-  requireApp(options.app);
   const result = await launcher.run({ ...options, mode });
   const stamp = new Date().toISOString();
   if (result.kind === "failed") {

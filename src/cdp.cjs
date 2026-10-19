@@ -22,18 +22,31 @@ async function targets(port) {
   return response.json();
 }
 
+// Every connect and send has a deadline, so a process whose main thread never answers cannot
+// hang the caller (and with it the launch lock).
 class Cdp {
-  static async connect(wsUrl) {
+  static async connect(wsUrl, { timeoutMs = 30_000 } = {}) {
     const ws = new WebSocket(wsUrl);
     await new Promise((resolve, reject) => {
-      ws.onopen = resolve;
-      ws.onerror = () => reject(new Error(`Cannot connect to ${wsUrl}`));
+      const timer = setTimeout(() => {
+        ws.close();
+        reject(new Error(`Timed out after ${timeoutMs} ms connecting to ${wsUrl}`));
+      }, timeoutMs);
+      ws.onopen = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      ws.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error(`Cannot connect to ${wsUrl}`));
+      };
     });
-    return new Cdp(ws);
+    return new Cdp(ws, timeoutMs);
   }
 
-  constructor(ws) {
+  constructor(ws, timeoutMs) {
     this.ws = ws;
+    this.timeoutMs = timeoutMs;
     this.nextId = 1;
     this.pending = new Map();
     this.events = [];
@@ -50,12 +63,26 @@ class Cdp {
       this.events.push(data);
       this.waiters = this.waiters.filter((waiter) => !waiter(data));
     };
+    ws.onclose = () => {
+      for (const { reject } of this.pending.values()) reject(new Error("The inspector connection closed"));
+      this.pending.clear();
+    };
   }
 
-  send(method, params = {}) {
+  send(method, params = {}, { timeoutMs = this.timeoutMs } = {}) {
     const id = this.nextId++;
     this.ws.send(JSON.stringify({ id, method, params }));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`No answer to ${method} within ${timeoutMs} ms`));
+      }, timeoutMs);
+      const settle = (fn) => (value) => {
+        clearTimeout(timer);
+        fn(value);
+      };
+      this.pending.set(id, { resolve: settle(resolve), reject: settle(reject) });
+    });
   }
 
   // Resolves with the first event (already received or future) named `method`.
