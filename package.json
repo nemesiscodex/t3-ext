@@ -1,0 +1,13 @@
+{
+  "name": "t3ext",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Extension loader patch for T3 Code",
+  "license": "MIT",
+  "bin": { "t3ext": "bin/t3ext.cjs" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test test/*.test.cjs",
+    "e2e": "node test/e2e.cjs"
+  }
+}
