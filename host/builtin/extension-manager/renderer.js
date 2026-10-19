@@ -4,8 +4,10 @@ if (!window.__t3extManager) {
   const api = window.t3ext;
   const PUZZLE_PATH =
     '<path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"></path>';
+  const FOCUSABLE = "button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex='-1'])";
   const pending = { reload: false, restart: false };
   let overlay = null;
+  let opener = null;
 
   const el = (tag, props = {}, ...children) => {
     const node = document.createElement(tag);
@@ -98,7 +100,16 @@ if (!window.__t3extManager) {
       list.replaceChildren(el("li", { className: "t3ext-error" }, errorText(error)));
       return;
     }
+    const focusedRow = document.activeElement?.closest(".t3ext-list [data-extension-id]");
+    const refocus = focusedRow && {
+      id: focusedRow.dataset.extensionId,
+      index: [...focusedRow.querySelectorAll(FOCUSABLE)].indexOf(document.activeElement),
+    };
     list.replaceChildren(...extensions.map(row));
+    if (refocus) {
+      const same = [...list.children].find((item) => item.dataset.extensionId === refocus.id);
+      (same?.querySelectorAll(FOCUSABLE)[refocus.index] ?? overlay.querySelector(".t3ext-dialog")).focus();
+    }
     const notice = overlay.querySelector(".t3ext-notice");
     notice.hidden = !pending.reload;
     notice.querySelector(".t3ext-notice-text").textContent = pending.restart
@@ -106,8 +117,36 @@ if (!window.__t3extManager) {
       : "Reload the window to apply your changes.";
   }
 
+  function close() {
+    overlay.remove();
+    window.removeEventListener("keydown", onKeydown, true);
+    if (opener?.isConnected) opener.focus();
+    opener = null;
+  }
+
+  // Window capture phase: the modal gets Escape and Tab even if focus slipped behind it,
+  // and T3's own shortcuts do not see them while it is open.
+  function onKeydown(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const dialog = overlay.querySelector(".t3ext-dialog");
+    const focusable = [...dialog.querySelectorAll(FOCUSABLE)].filter((node) => !node.closest("[hidden]"));
+    if (focusable.length === 0) return;
+    const active = document.activeElement;
+    const inside = active !== dialog && dialog.contains(active);
+    const edge = event.shiftKey ? focusable[0] : focusable.at(-1);
+    if (!inside || active === edge) {
+      event.preventDefault();
+      (event.shiftKey ? focusable.at(-1) : focusable[0]).focus();
+    }
+  }
+
   function build() {
-    const close = () => overlay.remove();
     const dialog = el(
       "div",
       { className: "t3ext-dialog", role: "dialog", tabindex: "-1", "aria-modal": "true", "aria-labelledby": "t3ext-title" },
@@ -141,16 +180,17 @@ if (!window.__t3extManager) {
     root.addEventListener("mousedown", (event) => {
       if (event.target === root) close();
     });
-    root.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") close();
-    });
     return root;
   }
 
   async function open() {
     if (!api) return;
     overlay ??= build();
-    if (!overlay.isConnected) document.body.append(overlay);
+    if (!overlay.isConnected) {
+      opener = document.activeElement;
+      document.body.append(overlay);
+      window.addEventListener("keydown", onKeydown, true);
+    }
     await render();
     overlay.querySelector(".t3ext-dialog").focus();
   }
