@@ -16,6 +16,11 @@ const LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks
 const PRESENCE = require.resolve("../host/presence.cjs");
 const { socketPath } = require(PRESENCE);
 
+function writeInspectFuse(app, bit) {
+  fs.mkdirSync(path.dirname(frameworkBinary(app)), { recursive: true });
+  fs.writeFileSync(frameworkBinary(app), Buffer.concat([SENTINEL, Buffer.from([1, 4]), Buffer.from(`100${bit}`)]));
+}
+
 // A stand-in for T3 Code that LaunchServices can start: a clone of this Node binary that
 // honours --inspect-brk and stays running, so nothing outside the temp dir is launched.
 // It never checks in with LaunchServices, so it never leaves the "starting" state.
@@ -36,8 +41,7 @@ function fakeApp({ inspectFuse = "1" } = {}) {
   execFileSync("cp", ["-c", process.execPath, path.join(macos, "node")]);
   fs.writeFileSync(path.join(root, "app.js"), "setInterval(() => {}, 1000);\n");
   fs.writeFileSync(path.join(macos, "fake"), `#!/bin/sh\nexec "$(dirname "$0")/node" "$@" ${JSON.stringify(path.join(root, "app.js"))}\n`, { mode: 0o755 });
-  fs.mkdirSync(path.dirname(frameworkBinary(app)), { recursive: true });
-  fs.writeFileSync(frameworkBinary(app), Buffer.concat([SENTINEL, Buffer.from([1, 4]), Buffer.from(`100${inspectFuse}`)]));
+  writeInspectFuse(app, inspectFuse);
   fs.writeFileSync(
     path.join(root, "host.cjs"),
     `exports.start = () => { require(${JSON.stringify(PRESENCE)}).serve(); return { started: true, reloaded: 0 }; };\n`,
@@ -113,6 +117,21 @@ test("with the inspect fuse off, attach refuses before touching the app", async 
     assert.deepEqual([result.kind, result.reason], ["failed", "fuse-off"]);
     assert.match(result.message, /EnableNodeCliInspectArguments Electron fuse off/);
     assert.equal(runningPid(app), null);
+  } finally {
+    await cleanup(root, app)();
+  }
+});
+
+test("attach --wait reads the fuse after waiting, so a build that arrived meanwhile with it off is refused", async () => {
+  const { root, app, hostEntry } = fakeApp();
+  try {
+    const pending = run({ mode: "attach", app, hostEntry, waitMs: 10_000, timeoutMs: 2000 });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    writeInspectFuse(app, "0");
+    execFileSync("open", ["-a", app]);
+    const result = await pending;
+    assert.deepEqual([result.kind, result.reason], ["failed", "fuse-off"], JSON.stringify(result));
+    assert.equal(result.pid, runningPid(app), "refused the instance that started during the wait");
   } finally {
     await cleanup(root, app)();
   }

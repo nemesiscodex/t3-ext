@@ -293,22 +293,23 @@ async function acquireLaunchLock(app, timeoutMs) {
 //       | { kind: "failed", reason, pid, message }
 // reason: fuse-off | port-busy | no-inspector | inject-failed | inspector-open | not-ready
 async function run({ app, mode, waitMs = 0, timeoutMs = 20_000, env = {}, appArgs = [], hostEntry = HOST_ENTRY }) {
-  const inspectFuse = readFuses(app).fuses.EnableNodeCliInspectArguments;
-  if (inspectFuse !== "on") {
-    if (mode === "launch") openApp(app, { env, appArgs });
-    return failed(
-      "fuse-off",
-      runningPid(app),
-      `${app} has its EnableNodeCliInspectArguments Electron fuse ${inspectFuse}, so neither --inspect-brk nor SIGUSR1 can open its inspector. ` +
-        "t3ext cannot load extensions into this build; T3 runs normally without them.",
-    );
-  }
   // Waiting for T3 to appear holds no lock, so a T3 Code+ launch meanwhile is never blocked.
   if (waitMs > 0) await waitFor("T3 to start", () => runningPid(app), { timeoutMs: waitMs, intervalMs: 500 }).catch(() => {});
 
   const release = await acquireLaunchLock(app, timeoutMs * 3);
   let result;
   try {
+    // Read after any wait: the T3 that started meanwhile may be a new build with the fuse off.
+    const inspectFuse = readFuses(app).fuses.EnableNodeCliInspectArguments;
+    if (inspectFuse !== "on") {
+      if (mode === "launch") openApp(app, { env, appArgs });
+      result = failed(
+        "fuse-off",
+        runningPid(app),
+        `${app} has its EnableNodeCliInspectArguments Electron fuse ${inspectFuse}, so neither --inspect-brk nor SIGUSR1 can open its inspector. ` +
+          "t3ext cannot load extensions into this build; T3 runs normally without them.",
+      );
+    }
     const context = { app, env, appArgs, timeoutMs, hostEntry };
     while (!result) {
       const observed = await observe(app);
