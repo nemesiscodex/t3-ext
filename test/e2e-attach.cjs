@@ -102,8 +102,9 @@ async function main() {
     assert.equal(await page.evaluate("typeof window.t3ext"), "undefined", "the page was not touched");
     step(`port 9229 held by a dummy listener: attach exits 1 with "${busy.stderr.trim().slice(25, 110)}…"; T3 keeps running, untouched`);
 
-    const front = frontPid();
-    assert.notEqual(front, pid, "the background clone is not frontmost");
+    // macOS may hand focus to the clone when another app quits; Finder takes it back.
+    if (frontPid() === pid) execFileSync("open", ["-a", "Finder"]);
+    await h.waitFor("another app to be frontmost", () => frontPid() !== pid, { timeoutMs: 5000 });
     const attached = cli("attach");
     assert.equal(attached.status, 0, attached.stderr);
     assert.match(attached.stdout, new RegExp(`Loaded the extension host into .* \\(pid ${pid}\\) and reloaded 1 window\\(s\\)\\. Inspector 127\\.0\\.0\\.1:9229 closed\\.`));
