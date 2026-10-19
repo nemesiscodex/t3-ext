@@ -86,7 +86,7 @@ function createRegistry({ home = t3Home(), builtinDir }) {
       parts[part] = isFile(file);
       if (!parts[part] && (fs.existsSync(file) || isSymlink(file))) errors.push(`${name} is not a file`);
     }
-    errors.push(runtimeErrors.get(id));
+    errors.push(...(runtimeErrors.get(id)?.values() ?? []));
     return {
       id,
       dir,
@@ -154,8 +154,12 @@ function createRegistry({ home = t3Home(), builtinDir }) {
     return get(id);
   }
 
-  function recordError(id, error) {
-    runtimeErrors.set(id, error);
+  // One error per file, so a part that later loads cleanly clears only its own error.
+  function recordError(id, file, error) {
+    const errors = runtimeErrors.get(id) ?? new Map();
+    if (error) errors.set(file, `${file}: ${error}`);
+    else errors.delete(file);
+    runtimeErrors.set(id, errors);
   }
 
   return { extensionsDir, stateFile, list, get, setEnabled, forget, add, recordError };

@@ -39,7 +39,7 @@ function loadMains(registry) {
     if (!extension.enabled || !extension.parts.main || !extension.manifest) continue;
     const report = (error) => {
       console.error(`[t3ext] ${extension.id}/main.js failed`, error);
-      registry.recordError(extension.id, `main.js: ${error?.stack ?? error}`);
+      registry.recordError(extension.id, "main.js", error?.stack ?? error);
     };
     try {
       const exported = require(path.join(extension.dir, "main.js"));
@@ -53,19 +53,36 @@ function loadMains(registry) {
   }
 }
 
+const PAGE_PARTS = [
+  { part: "style", file: "style.css", inject: (contents, _id, css) => contents.insertCSS(css) },
+  {
+    part: "renderer",
+    file: "renderer.js",
+    inject: (contents, id, code) =>
+      contents.executeJavaScript(
+        `(() => { try {\n${code}\n} catch (error) { console.error("[t3ext]", ${JSON.stringify(id)}, error); } })();\n//# sourceURL=t3ext/${id.replace(":", "/")}/renderer.js`,
+      ),
+  },
+];
+
+// Each part of each extension fails on its own; the rest still load.
 function injectRenderers(registry, contents) {
   for (const extension of registry.list()) {
     if (!extension.enabled || !extension.manifest) continue;
-    if (extension.parts.style) {
-      contents.insertCSS(fs.readFileSync(path.join(extension.dir, "style.css"), "utf8")).catch((error) => {
-        console.error(`[t3ext] ${extension.id}/style.css failed`, error);
-      });
-    }
-    if (extension.parts.renderer) {
-      const code = fs.readFileSync(path.join(extension.dir, "renderer.js"), "utf8");
-      const id = JSON.stringify(extension.id);
-      const wrapped = `(() => { try {\n${code}\n} catch (error) { console.error("[t3ext]", ${id}, error); } })();\n//# sourceURL=t3ext/${extension.id.replace(":", "/")}/renderer.js`;
-      contents.executeJavaScript(wrapped).catch((error) => console.error(`[t3ext] ${extension.id}/renderer.js failed`, error));
+    for (const { part, file, inject } of PAGE_PARTS) {
+      if (!extension.parts[part]) continue;
+      const report = (error) => {
+        console.error(`[t3ext] ${extension.id}/${file} failed`, error);
+        registry.recordError(extension.id, file, error?.message ?? error);
+      };
+      try {
+        inject(contents, extension.id, fs.readFileSync(path.join(extension.dir, file), "utf8")).then(
+          () => registry.recordError(extension.id, file, null),
+          report,
+        );
+      } catch (error) {
+        report(error);
+      }
     }
   }
 }

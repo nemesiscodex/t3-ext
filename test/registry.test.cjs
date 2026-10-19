@@ -72,10 +72,19 @@ test("add copies a valid folder and refuses duplicates and non-extensions", () =
   assert.throws(() => registry.add(path.join(root, "incoming", "empty")), /manifest.json is missing/);
 });
 
+test("runtime errors are kept per file, and a cleared file drops only its own error", () => {
+  const { registry } = setup();
+  registry.recordError("alpha", "main.js", "boom");
+  registry.recordError("alpha", "renderer.js", "EACCES");
+  assert.equal(registry.get("alpha").error, "main.js: boom\nrenderer.js: EACCES");
+  registry.recordError("alpha", "renderer.js", null);
+  assert.equal(registry.get("alpha").error, "main.js: boom");
+});
+
 test("forget clears disabled state and runtime errors", () => {
   const { registry, home } = setup();
   registry.setEnabled("alpha", false);
-  registry.recordError("alpha", "main.js: boom");
+  registry.recordError("alpha", "main.js", "boom");
   assert.equal(registry.get("alpha").error, "main.js: boom");
   registry.forget("alpha");
   assert.equal(registry.get("alpha").error, null);
