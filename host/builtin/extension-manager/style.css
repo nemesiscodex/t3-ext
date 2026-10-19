@@ -1,0 +1,237 @@
+.t3ext-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: color-mix(in srgb, black 55%, transparent);
+  backdrop-filter: blur(2px);
+  font: inherit;
+  font-size: 14px;
+}
+
+.t3ext-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 100%);
+  max-height: min(720px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius, 0.625rem) + 4px);
+  background: var(--popover, var(--background));
+  color: var(--popover-foreground, var(--foreground));
+  box-shadow: 0 24px 64px color-mix(in srgb, black 40%, transparent);
+}
+
+.t3ext-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 20px 12px;
+}
+
+.t3ext-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.t3ext-subtitle {
+  margin: 4px 0 0;
+  color: var(--muted-foreground);
+}
+
+.t3ext-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 0 20px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.t3ext-list {
+  flex: 1;
+  margin: 0;
+  padding: 8px 12px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.t3ext-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 8px;
+  border-radius: var(--control-radius, 0.5rem);
+}
+
+.t3ext-row + .t3ext-row {
+  border-top: 1px solid var(--border);
+}
+
+.t3ext-row-main {
+  min-width: 0;
+}
+
+.t3ext-row-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.t3ext-name {
+  font-weight: 500;
+}
+
+.t3ext-version {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.t3ext-badge,
+.t3ext-chip {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.t3ext-description {
+  margin: 4px 0 0;
+  color: var(--muted-foreground);
+}
+
+.t3ext-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.t3ext-id {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.t3ext-id:hover {
+  color: var(--foreground);
+  text-decoration: underline;
+}
+
+.t3ext-error {
+  margin: 6px 0 0;
+  color: var(--destructive-foreground, #e5484d);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.t3ext-row-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.t3ext-button,
+.t3ext-icon-button {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--input, var(--border));
+  border-radius: var(--control-radius, 0.5rem);
+  background: var(--secondary, transparent);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.t3ext-button:hover,
+.t3ext-icon-button:hover {
+  background: var(--accent);
+}
+
+.t3ext-icon-button {
+  width: 30px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.t3ext-button-primary {
+  border-color: transparent;
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.t3ext-button-primary:hover {
+  background: color-mix(in srgb, var(--primary) 85%, white);
+}
+
+.t3ext-button-danger {
+  color: var(--destructive-foreground, #e5484d);
+}
+
+.t3ext-switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--input, var(--border));
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.t3ext-switch[aria-checked="true"] {
+  background: var(--primary);
+}
+
+.t3ext-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: white;
+  transition: transform 120ms;
+}
+
+.t3ext-switch[aria-checked="true"] .t3ext-switch-thumb {
+  transform: translateX(16px);
+}
+
+.t3ext-button:focus-visible,
+.t3ext-icon-button:focus-visible,
+.t3ext-switch:focus-visible,
+.t3ext-id:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.t3ext-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--muted);
+}
+
+.t3ext-notice[hidden] {
+  display: none;
+}
