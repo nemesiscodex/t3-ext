@@ -1,0 +1,49 @@
+.t3-settle-boom-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 2147483646;
+}
+
+.t3-settle-boom-label {
+  position: fixed;
+  z-index: 2147483647;
+  pointer-events: none;
+  opacity: 0;
+  padding: 6px 10px 7px;
+  border: 1px solid rgba(241, 239, 232, 0.22);
+  background: rgba(0, 0, 0, 0.92);
+  color: rgb(241, 239, 232);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.t3-settle-boom-word {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.32em;
+  white-space: pre;
+}
+
+.t3-settle-boom-word::before {
+  content: "■";
+  margin-right: 0.7em;
+  color: rgb(134, 239, 172);
+  letter-spacing: 0;
+}
+
+.t3-settle-boom-title:empty {
+  display: none;
+}
+
+.t3-settle-boom-title {
+  margin-top: 3px;
+  max-width: 36ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: rgba(241, 239, 232, 0.55);
+}

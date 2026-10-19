@@ -137,6 +137,14 @@ ln -s ~/code/my-ext ~/.t3/extensions/my-ext
 
 Edit, then reload the window. **Remove** in the manager moves only the link to the Trash, not your repository.
 
+### Example: Settle Boom
+
+`examples/settle-boom` sets off a small explosion with a synthesized boom when a thread settles, styled after Kit Langton's [Effect Institute](https://www.effect.institute/). It is a `renderer.js` and a `style.css`, and shows how to react to T3's own events. See [its README](examples/settle-boom/README.md). To try it, from this repository:
+
+```sh
+mkdir -p ~/.t3/extensions && ln -s "$PWD/examples/settle-boom" ~/.t3/extensions/settle-boom
+```
+
 ### The built-in extension manager
 
 The manager is itself an extension, in `host/builtin/extension-manager`. You can disable it but not remove it. If you disable it, **Extensions > Manage Extensions…** offers to turn it back on. The settings item is added on a best-effort basis by matching T3's settings sidebar. If a T3 update changes that sidebar, the menu keeps working.
