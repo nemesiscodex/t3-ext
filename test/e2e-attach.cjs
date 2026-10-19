@@ -2,10 +2,11 @@
 
 // End to end on an untouched clone of the real app, started WITHOUT the launcher (as the Dock,
 // Spotlight, a deep link, or an auto-update restart would): t3ext attach loads the host over
-// SIGUSR1, and a second attach and a launch change nothing. Usage: node test/e2e-attach.cjs   (T3EXT_E2E_APP overrides)
+// SIGUSR1, a second attach and a launch change nothing, and the LaunchAgent's command attaches
+// to a T3 that starts after it. Usage: node test/e2e-attach.cjs   (T3EXT_E2E_APP overrides)
 
 const assert = require("node:assert/strict");
-const { execFileSync, spawnSync } = require("node:child_process");
+const { execFileSync, spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
@@ -56,7 +57,7 @@ async function main() {
     const cli = (...args) => spawnSync(process.execPath, [CLI, ...args, "--app", app], { encoding: "utf8", env: openEnv({ HOME: fakeHome }) });
 
     // Like the Dock or Spotlight would, but in the background so focus changes are observable.
-    const startBare = async () => {
+    const startBare = async ({ orHosted = false } = {}) => {
       const rendererPort = await h.freePort();
       execFileSync(
         "open",
@@ -65,7 +66,7 @@ async function main() {
       );
       const { pid } = await h.waitFor("the clone to finish starting", async () => {
         const observed = await observe(app);
-        return observed.state === "bare" && observed;
+        return (observed.state === "bare" || (orHosted && observed.state === "hosted")) && observed;
       }, { timeoutMs: 60_000 });
       return { pid, rendererPort };
     };
@@ -168,6 +169,34 @@ async function main() {
     await stop();
     step("quit the clone");
 
+    const dryRun = spawnSync(process.execPath, [CLI, "install-agent", "--dry-run", "--app", app], { encoding: "utf8", env: openEnv({ HOME: fakeHome }) });
+    assert.equal(dryRun.status, 0, dryRun.stderr);
+    const plistFile = path.join(dir, "agent.plist");
+    fs.writeFileSync(plistFile, dryRun.stdout.slice(dryRun.stdout.indexOf("<?xml"), dryRun.stdout.indexOf("</plist>") + 9));
+    execFileSync("plutil", ["-lint", plistFile]);
+    const [program, ...programArgs] = JSON.parse(execFileSync("plutil", ["-convert", "json", "-o", "-", plistFile], { encoding: "utf8" })).ProgramArguments;
+    const agentRun = spawn(program, programArgs, { env: openEnv({ HOME: fakeHome }), stdio: ["ignore", "pipe", "pipe"] });
+    let agentOutput = "";
+    agentRun.stdout.on("data", (data) => (agentOutput += data));
+    agentRun.stderr.on("data", (data) => (agentOutput += data));
+    const agentExit = new Promise((resolve) => agentRun.once("exit", resolve));
+    await h.waitFor("the agent to wait for T3", () => /changed; attaching/.test(agentOutput), { timeoutMs: 10_000 });
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    assert.equal(agentRun.exitCode, null, "attach --wait is still waiting while T3 is closed");
+    step("the LaunchAgent's command (attach --wait, on T3's binary as node) is waiting before the clone starts");
+
+    const second = await startBare({ orHosted: true });
+    const status = await agentExit;
+    assert.equal(status, 0, agentOutput);
+    assert.doesNotMatch(agentOutput, /cannot run as node/, "ran on T3's own binary");
+    assert.match(agentOutput, new RegExp(`Loaded the extension host into .* \\(pid ${second.pid}\\) and reloaded \\d window\\(s\\)`));
+    assert.equal((await observe(app)).state, "hosted");
+    step(`the waiting agent command attached once the clone was up (pid ${second.pid}) and exited 0: ${agentOutput.trim().split("\n").at(-1).slice(25)}`);
+    const page2 = await h.appPage(second.rendererPort, 90_000);
+    await h.waitFor("window.t3ext on the restarted clone", () => page2.evaluate("document.readyState === 'complete' && typeof window.t3ext === 'object' && !!window.__t3extSample"), { timeoutMs: 30_000 });
+    page2.close();
+    step("the restarted clone's page has window.t3ext and the sample renderer");
+    await stop();
     console.log("# all attach e2e checks passed");
   } finally {
     const left = await h.killUnder(dir);

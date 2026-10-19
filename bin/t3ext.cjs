@@ -4,6 +4,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const agent = require("../src/agent.cjs");
 const { readFuses } = require("../src/fuses.cjs");
 const launcher = require("../src/launcher.cjs");
 const launcherApp = require("../src/launcher-app.cjs");
@@ -17,9 +18,14 @@ const USAGE = `Usage:
       loaded. --wait first waits up to <ms> for T3 Code to start; if it does not, exits 0.
   t3ext status [--app <path>]
       Show the app version, running pid, whether the host is loaded, the inspect fuse, and
-      whether T3 Code+ is installed.
+      whether the LaunchAgent and T3 Code+ are installed.
   t3ext install-launcher [--app <path>] [--dest <dir>] [--dry-run]
       Build "T3 Code+.app" in <dir> (default ~/Applications) that runs "t3ext launch".
+  t3ext install-agent [--app <path>] [--dry-run]
+      Install the LaunchAgent ${agent.LABEL} that runs "t3ext attach --wait" whenever
+      T3 Code's Info.plist changes, which is what an auto-update does.
+  t3ext uninstall-agent [--dry-run]
+      Unload and remove that LaunchAgent.
 
 --app defaults to "${DEFAULT_APP}".`;
 
@@ -98,6 +104,7 @@ const commands = {
     } catch (error) {
       fuse = `unreadable (${error.message})`;
     }
+    const agentState = agent.state();
     const launcherBundle = path.join(os.homedir(), "Applications", `${launcherApp.NAME}.app`);
     const rows = [
       ["app", app],
@@ -105,6 +112,7 @@ const commands = {
       ["running", pid ? `yes (pid ${pid}${state === "starting" ? ", still starting" : ""})` : "no"],
       ["host loaded", pid ? yesNo(state === "hosted") : "no (not running)"],
       ["inspect fuse", fuse],
+      ["agent installed", `${yesNo(agentState.installed)}${agentState.installed || agentState.loaded ? ` (${agentState.loaded ? "loaded" : "not loaded"} in launchd)` : ""}`],
       ["launcher installed", fs.existsSync(launcherBundle) ? `yes (${launcherBundle})` : "no"],
     ];
     for (const [label, value] of rows) console.log(`${label.padEnd(19)}${value}`);
@@ -123,6 +131,29 @@ const commands = {
       return 0;
     }
     console.log(`Created ${launcherApp.build(planned)}. Open it instead of T3 Code to load extensions.`);
+    return 0;
+  },
+  async "install-agent"({ app, dryRun }) {
+    requireApp(app);
+    const planned = agent.plan({ app, cliPath: __filename });
+    if (dryRun) {
+      console.log(`Would write ${planned.plist}:\n`);
+      process.stdout.write(planned.content);
+      console.log(`\nThen run:\n${planned.commands.map((command) => `  ${command.join(" ")}`).join("\n")}`);
+      return 0;
+    }
+    agent.install(planned);
+    console.log(`Installed ${planned.plist} and loaded it. After T3 Code updates, it reloads the extension host; log ${planned.log}.`);
+    return 0;
+  },
+  async "uninstall-agent"({ dryRun }) {
+    const planned = agent.uninstallPlan();
+    if (dryRun) {
+      console.log(`Would run:\n${planned.commands.map((command) => `  ${command.join(" ")}`).join("\n")}\nThen remove ${planned.plist}.`);
+      return 0;
+    }
+    agent.uninstall(planned);
+    console.log(`Unloaded ${agent.LABEL} and removed ${planned.plist}.`);
     return 0;
   },
 };
