@@ -73,13 +73,16 @@
 }
 
 .t3ext-row-main {
+  flex: 1 1 auto;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .t3ext-row-title {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
+  gap: 2px 8px;
 }
 
 .t3ext-name {
