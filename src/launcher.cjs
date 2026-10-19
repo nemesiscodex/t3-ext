@@ -212,7 +212,14 @@ async function attachHost({ app, hostEntry }, pid) {
 
 async function untilReady({ app, timeoutMs }, pid) {
   try {
-    await waitFor("T3 to finish starting", () => instance(app)?.pid !== pid || instance(app).ready, { timeoutMs, intervalMs: 250 });
+    await waitFor(
+      "T3 to finish starting",
+      () => {
+        const now = instance(app);
+        return now?.pid !== pid || now.ready;
+      },
+      { timeoutMs, intervalMs: 250 },
+    );
     return null;
   } catch {
     return failed(
