@@ -7,14 +7,19 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
-const { launch, runningPid } = require("../src/launcher.cjs");
+const { SENTINEL, frameworkBinary } = require("../src/fuses.cjs");
+const { run, runningPid } = require("../src/launcher.cjs");
 const { killUnder, waitFor } = require("./harness.cjs");
 
 const LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 
+const PRESENCE = require.resolve("../host/presence.cjs");
+const { socketPath } = require(PRESENCE);
+
 // A stand-in for T3 Code that LaunchServices can start: a clone of this Node binary that
 // honours --inspect-brk and stays running, so nothing outside the temp dir is launched.
-function fakeApp() {
+// It never checks in with LaunchServices, so it never leaves the "starting" state.
+function fakeApp({ inspectFuse = "1" } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "t3ext-launcher-")));
   const app = path.join(root, "Fake T3.app");
   const macos = path.join(app, "Contents", "MacOS");
@@ -31,24 +36,36 @@ function fakeApp() {
   execFileSync("cp", ["-c", process.execPath, path.join(macos, "node")]);
   fs.writeFileSync(path.join(root, "app.js"), "setInterval(() => {}, 1000);\n");
   fs.writeFileSync(path.join(macos, "fake"), `#!/bin/sh\nexec "$(dirname "$0")/node" "$@" ${JSON.stringify(path.join(root, "app.js"))}\n`, { mode: 0o755 });
-  fs.writeFileSync(path.join(root, "host.cjs"), "exports.start = () => {};\n");
+  fs.mkdirSync(path.dirname(frameworkBinary(app)), { recursive: true });
+  fs.writeFileSync(frameworkBinary(app), Buffer.concat([SENTINEL, Buffer.from([1, 4]), Buffer.from(`100${inspectFuse}`)]));
+  fs.writeFileSync(
+    path.join(root, "host.cjs"),
+    `exports.start = () => { require(${JSON.stringify(PRESENCE)}).serve(); return { started: true, reloaded: 0 }; };\n`,
+  );
   return { root, app, hostEntry: path.join(root, "host.cjs") };
 }
 
+// The fake host dies by SIGTERM, which skips its exit handler, so its socket file is removed here.
 function cleanup(root, app) {
   return async () => {
+    const pid = runningPid(app);
+    if (pid) fs.rmSync(socketPath(pid), { force: true });
     assert.deepEqual(await killUnder(root), [], "no fake app process left behind");
-    execFileSync(LSREGISTER, ["-u", app]);
+    try {
+      execFileSync(LSREGISTER, ["-u", app], { stdio: "ignore" });
+    } catch {}
     fs.rmSync(root, { recursive: true, force: true });
   };
 }
 
-test("two concurrent launches start one instance; the second activates it", async () => {
+const launch = (options) => run({ mode: "launch", ...options });
+
+test("two concurrent launches start one instance; the second finds the host already loaded", async () => {
   const { root, app, hostEntry } = fakeApp();
   try {
     const results = await Promise.all([launch({ app, hostEntry, timeoutMs: 5000 }), launch({ app, hostEntry, timeoutMs: 5000 })]);
     const kinds = results.map((result) => result.kind).sort();
-    assert.deepEqual(kinds, ["activated", "injected"], JSON.stringify(results));
+    assert.deepEqual(kinds, ["already-hosted", "started"], JSON.stringify(results));
     assert.equal(results[0].pid, results[1].pid, "both report the same running instance");
   } finally {
     await cleanup(root, app)();
@@ -60,7 +77,7 @@ test("a launcher that died mid-launch does not block the next one", async () => 
   try {
     const stuckHost = path.join(root, "stuck-host.cjs");
     fs.writeFileSync(stuckHost, "exports.start = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);\n");
-    const script = `require(${JSON.stringify(require.resolve("../src/launcher.cjs"))}).launch({ app: ${JSON.stringify(app)}, hostEntry: ${JSON.stringify(stuckHost)}, timeoutMs: 5000 })`;
+    const script = `require(${JSON.stringify(require.resolve("../src/launcher.cjs"))}).run({ mode: "launch", app: ${JSON.stringify(app)}, hostEntry: ${JSON.stringify(stuckHost)}, timeoutMs: 5000 })`;
     const crashed = spawn(path.join(app, "Contents", "MacOS", "node"), ["-e", script], { stdio: "ignore" });
     await waitFor("the first launcher to start the app", () => runningPid(app), { timeoutMs: 10_000 });
     crashed.kill("SIGKILL");
@@ -68,8 +85,34 @@ test("a launcher that died mid-launch does not block the next one", async () => 
 
     const started = Date.now();
     const result = await launch({ app, timeoutMs: 2000 });
-    assert.equal(result.kind, "activated", JSON.stringify(result));
-    assert.ok(Date.now() - started < 2000, "did not wait out the dead launcher's lock");
+    assert.deepEqual([result.kind, result.reason], ["failed", "not-ready"], "the wedged instance is reported, not the lock");
+    assert.match(result.message, /has not finished starting after 2000 ms/);
+    assert.ok(Date.now() - started < 4000, `did not wait out the dead launcher's lock (6 s); took ${Date.now() - started} ms`);
+  } finally {
+    await cleanup(root, app)();
+  }
+});
+
+test("attach on a stopped app does nothing; with --wait it waits, then still starts nothing", async () => {
+  const { root, app, hostEntry } = fakeApp();
+  try {
+    assert.deepEqual(await run({ mode: "attach", app, hostEntry }), { kind: "not-running" });
+    const started = Date.now();
+    assert.deepEqual(await run({ mode: "attach", app, hostEntry, waitMs: 1500 }), { kind: "not-running" });
+    assert.ok(Date.now() - started >= 1500, "waited for the app to start");
+    assert.equal(runningPid(app), null, "attach never starts T3");
+  } finally {
+    await cleanup(root, app)();
+  }
+});
+
+test("with the inspect fuse off, attach refuses before touching the app", async () => {
+  const { root, app, hostEntry } = fakeApp({ inspectFuse: "0" });
+  try {
+    const result = await run({ mode: "attach", app, hostEntry });
+    assert.deepEqual([result.kind, result.reason], ["failed", "fuse-off"]);
+    assert.match(result.message, /EnableNodeCliInspectArguments Electron fuse off/);
+    assert.equal(runningPid(app), null);
   } finally {
     await cleanup(root, app)();
   }

@@ -3,29 +3,57 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const electron = require("electron");
+const presence = require("./presence.cjs");
 const { createRegistry } = require("./registry.cjs");
 
-const { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, session, shell } = electron;
+const { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, session, shell, webContents } = electron;
 const APP_SCHEME = "t3code:";
 const MANAGER_ID = "builtin:extension-manager";
 const MENU_ID = "t3ext-menu";
+const STARTED = Symbol.for("t3ext.host.started");
 
 function isAppUrl(url) {
   return typeof url === "string" && url.startsWith(`${APP_SCHEME}//`);
 }
 
+// Runs either before T3's own code (launch with --inspect-brk) or late, into a running T3 (attach).
+// Late, windows already exist: they are reloaded so the preload and the injected parts reach them,
+// and the current menu is set again so it gets the Extensions submenu. A second call does nothing.
 function start() {
+  if (globalThis[STARTED]) return { started: false, reloaded: 0 };
+  globalThis[STARTED] = true;
   const registry = createRegistry({ builtinDir: path.join(__dirname, "builtin") });
 
   registerIpc(registry);
   wrapApplicationMenu(registry);
-  app.on("web-contents-created", (_event, contents) => {
+  const watched = new WeakSet();
+  const watch = (contents) => {
+    if (watched.has(contents)) return;
+    watched.add(contents);
     contents.on("dom-ready", () => {
       if (isAppUrl(contents.getURL())) injectRenderers(registry, contents);
     });
-  });
-  app.whenReady().then(() => registerPreload(session.defaultSession));
+  };
+  app.on("web-contents-created", (_event, contents) => watch(contents));
+
+  let reloaded = 0;
+  const onReady = () => {
+    registerPreload(session.defaultSession);
+    const menu = Menu.getApplicationMenu();
+    if (menu) Menu.setApplicationMenu(menu);
+    for (const contents of webContents.getAllWebContents()) {
+      watch(contents);
+      if (isAppUrl(contents.getURL())) {
+        contents.reload();
+        reloaded++;
+      }
+    }
+  };
+  if (app.isReady()) onReady();
+  else app.whenReady().then(onReady);
   loadMains(registry);
+  presence.serve();
+  return { started: true, reloaded };
 }
 
 function registerPreload(ses) {

@@ -8,6 +8,6 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "test": "node --test test/*.test.cjs",
-    "e2e": "node test/e2e.cjs"
+    "e2e": "node test/e2e.cjs && node test/e2e-attach.cjs"
   }
 }

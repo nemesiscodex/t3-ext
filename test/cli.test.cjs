@@ -55,7 +55,10 @@ test("install-launcher builds a valid ad-hoc signed app that quotes odd paths", 
 test("bad arguments exit 2 with usage; a missing app exits 1", () => {
   assert.equal(run("frobnicate").status, 2);
   assert.equal(run("launch", "--env", "NOEQUALS").status, 2);
-  const missing = run("launch", "--app", "/nonexistent/X.app");
-  assert.equal(missing.status, 1);
-  assert.match(missing.stderr, /is not an app bundle/);
+  assert.equal(run("attach", "--wait", "soon").status, 2);
+  for (const command of ["launch", "attach", "status"]) {
+    const missing = run(command, "--app", "/nonexistent/X.app");
+    assert.equal(missing.status, 1, command);
+    assert.match(missing.stderr, /is not an app bundle/, command);
+  }
 });

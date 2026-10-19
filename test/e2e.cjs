@@ -164,7 +164,7 @@ async function main() {
 
     const exe = path.join(app, "Contents", "MacOS", path.basename(app, ".app"));
     const again = execFileSync(exe, [CLI, "launch", "--app", app], { encoding: "utf8", env: { ...openEnv, ELECTRON_RUN_AS_NODE: "1", HOME: fakeHome } });
-    assert.match(again, /is already running \(pid (\d+)\); brought it to the front/);
+    assert.match(again, new RegExp(`is already running \\(pid ${pid}\\) with the extension host; brought it to the front`));
     assert.equal(runningPid(app), pid, "LaunchServices still reports the original instance");
     step("a second launch only activates the running app");
 
