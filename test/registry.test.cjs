@@ -81,3 +81,17 @@ test("forget clears disabled state and runtime errors", () => {
   assert.equal(registry.get("alpha").error, null);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"))).disabled, []);
 });
+
+test("a part counts only when it is a regular file, following symlinks; anything else is an error", () => {
+  const { registry, root, extensions } = setup();
+  const dir = path.join(extensions, "odd");
+  writeExtension(dir, { "manifest.json": JSON.stringify({ name: "Odd" }) });
+  fs.mkdirSync(path.join(dir, "renderer.js"));
+  writeExtension(path.join(root, "shared"), { "style.css": "a{}" });
+  fs.symlinkSync(path.join(root, "shared", "style.css"), path.join(dir, "style.css"));
+  fs.symlinkSync(path.join(root, "nowhere.js"), path.join(dir, "main.js"));
+  const odd = registry.get("odd");
+  assert.deepEqual(odd.parts, { main: false, renderer: false, style: true });
+  assert.equal(odd.error, "main.js is not a file\nrenderer.js is not a file");
+  assert.equal(registry.get("alpha").error, null, "regular files report no error");
+});

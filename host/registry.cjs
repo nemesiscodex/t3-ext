@@ -79,8 +79,14 @@ function createRegistry({ home = t3Home(), builtinDir }) {
 
   function describe(id, dir, builtin, disabled) {
     const { manifest, error } = readManifest(dir);
+    const errors = [error];
     const parts = {};
-    for (const [part, file] of Object.entries(PARTS)) parts[part] = fs.existsSync(path.join(dir, file));
+    for (const [part, name] of Object.entries(PARTS)) {
+      const file = path.join(dir, name);
+      parts[part] = isFile(file);
+      if (!parts[part] && (fs.existsSync(file) || isSymlink(file))) errors.push(`${name} is not a file`);
+    }
+    errors.push(runtimeErrors.get(id));
     return {
       id,
       dir,
@@ -88,7 +94,7 @@ function createRegistry({ home = t3Home(), builtinDir }) {
       manifest,
       enabled: !disabled.includes(id),
       parts,
-      error: error ?? runtimeErrors.get(id) ?? null,
+      error: errors.filter(Boolean).join("\n") || null,
     };
   }
 
@@ -170,6 +176,14 @@ function listDirs(dir) {
 function isDirectory(p) {
   try {
     return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isFile(p) {
+  try {
+    return fs.statSync(p).isFile();
   } catch {
     return false;
   }
