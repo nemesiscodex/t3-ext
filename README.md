@@ -95,7 +95,7 @@ Delete `~/Applications/T3 Code+.app`, and optionally `~/.t3/extensions` and `~/.
 ## Tests
 
 ```sh
-npm test       # unit tests: registry, CLI, launcher app
+npm test       # unit tests: registry, CLI, launcher app, launch race (starts a fake app)
 npm run e2e    # clones the installed app into a temp dir and drives it over CDP
 ```
 

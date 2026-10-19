@@ -4,8 +4,10 @@
 // before T3's own main script runs, then closes the inspector.
 
 const { execFileSync } = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const net = require("node:net");
+const os = require("node:os");
 const path = require("node:path");
 const { Cdp, targets, waitFor } = require("./cdp.cjs");
 
@@ -54,9 +56,60 @@ function injectExpression(hostEntry) {
   })()`;
 }
 
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+// One launch per app at a time. Otherwise two launchers both see "not running", LaunchServices
+// starts one instance, and the other waits for an inspector that never opens. The lock file
+// holds the owner's pid; it is linked into place whole, so a reader never sees it half written.
+async function acquireLaunchLock(app, timeoutMs) {
+  const id = crypto.createHash("sha256").update(fs.realpathSync(app)).digest("hex").slice(0, 16);
+  const lock = path.join(os.tmpdir(), `t3ext-launch-${id}.lock`);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const tmp = `${lock}.${process.pid}`;
+    fs.writeFileSync(tmp, String(process.pid));
+    try {
+      fs.linkSync(tmp, lock);
+      return () => fs.rmSync(lock, { force: true });
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    } finally {
+      fs.rmSync(tmp, { force: true });
+    }
+    let holder;
+    try {
+      holder = Number(fs.readFileSync(lock, "utf8"));
+    } catch {
+      continue;
+    }
+    if (!isAlive(holder)) {
+      fs.rmSync(lock, { force: true });
+      continue;
+    }
+    if (Date.now() > deadline) throw new Error(`Another launch of ${app} (pid ${holder}) is still running; lock ${lock}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 // Result: { kind: "activated", pid } | { kind: "injected", pid, port }
 //       | { kind: "no-inspector", port, error } | { kind: "inject-failed", pid, port, error }
-async function launch({ app, env = {}, appArgs = [], timeoutMs = 20_000, hostEntry = HOST_ENTRY }) {
+async function launch({ timeoutMs = 20_000, ...options }) {
+  const release = await acquireLaunchLock(options.app, timeoutMs * 3);
+  try {
+    return await launchUnlocked({ ...options, timeoutMs });
+  } finally {
+    release();
+  }
+}
+
+async function launchUnlocked({ app, env = {}, appArgs = [], timeoutMs, hostEntry = HOST_ENTRY }) {
   const existing = runningPid(app);
   if (existing) {
     execFileSync("open", ["-a", app], { env: openEnv() });
