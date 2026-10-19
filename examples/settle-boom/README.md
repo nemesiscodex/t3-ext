@@ -1,6 +1,6 @@
 # Settle Boom
 
-When a thread settles, its sidebar row shakes, charges up and explodes, with a synthesized boom. The look and sound follow Kit Langton's [Effect Institute](https://www.effect.institute/): off-white ink on black, a dot grid, thin rings, glitch glyphs, small green squares, and Tone.js-style voices.
+When you settle a thread, its sidebar row shakes, charges up and explodes, with a synthesized boom. The thread moves to Settled only once the explosion is over. The look and sound follow Kit Langton's [Effect Institute](https://www.effect.institute/): off-white ink on black, a dot grid, thin rings, glitch glyphs, small green squares, and Tone.js-style voices.
 
 ![Frames at 150, 330, 415, 480, 600 and 900 ms](preview.png)
 
@@ -27,9 +27,9 @@ It fires for every settle: the Settle button, a menu, a keyboard shortcut, auto-
 
 ## How it knows
 
-**Settling in this window.** The row's Settle button, the thread menu and ⌘⇧S all send a `thread.settle` command to T3's server. T3 moves the row to Settled right after, so the extension catches the command as it is sent, copies the row, and starts there. It wraps `WebSocket.prototype.send`, because T3's connection opens before `renderer.js` runs.
+**The Settle button and ⌘⇧S are held.** The extension stops the click or key press before T3 sees it and hides the real row behind the effect. About 1.8 seconds later, when the debris is gone, it replays the same click or key press. T3 then settles as usual, with its "⌘Z to undo". If you moved to another thread in the meantime, it clicks the row's Settle button instead. Only T3's default ⌘⇧S is held; a remapped shortcut settles at once.
 
-**Settling anywhere else.** Auto-settle, an agent, or another window: the server sends a `thread.updated` message with `thread.settledAt` set. The extension reads it through the `MessageEvent` `data` getter, inside T3's own handler, before T3 moves the row.
+**Everything else settles at once.** The **Settle thread** menu is a native menu, so it cannot be held. It sends a `thread.settle` command to T3's server, and T3 moves the row right after, so the extension catches the command as it is sent and explodes a copy of the row. Auto-settle, an agent or another window make the server send a `thread.updated` message with `thread.settledAt` set. The extension reads it before T3 handles it, while the row is still on screen. T3's connection opens before `renderer.js` runs, so these two hooks wrap `WebSocket.prototype.send` and the `MessageEvent` `data` getter.
 
 It explodes once per settle. It skips a `settledAt` more than 30 seconds old, so reloads and old settled threads stay quiet.
 

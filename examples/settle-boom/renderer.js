@@ -20,8 +20,10 @@ if (!window.t3SettleBoom) {
 
   // --- Which thread, and where ----------------------------------------------------------------
 
-  // A row's data-thread-item is "<environmentId>:<threadId>".
-  const rowFor = (threadId) => [...document.querySelectorAll(ROW)].find((row) => row.getAttribute("data-thread-item").endsWith(`:${threadId}`));
+  // A row's data-thread-item is "<environmentId>:<threadId>". Settled threads keep theirs in the
+  // Settled section further down, so the active row is the first match.
+  const threadIdOf = (row) => row.getAttribute("data-thread-item").split(":").pop();
+  const rowFor = (threadId) => [...document.querySelectorAll(ROW)].find((row) => threadIdOf(row) === threadId);
 
   const backgroundOf = (node) => {
     for (let at = node; at; at = at.parentElement) {
@@ -31,33 +33,110 @@ if (!window.t3SettleBoom) {
     return "black";
   };
 
-  // Everything the effect needs from the row, taken while it is still on screen: T3 moves it to
-  // Settled right after. Without a row (a filter hides it, its project is collapsed) the effect
-  // plays in the middle of the window.
+  // Everything the effect needs from the row, taken while it is still on screen. Without a
+  // visible row (a filter hides it, its project is collapsed) the effect plays in the middle of
+  // the window.
   function target(threadId, title) {
     const row = rowFor(threadId);
     const rect = row?.getBoundingClientRect();
-    if (!rect?.width) return { x: innerWidth / 2, y: innerHeight / 2, title: title ?? "" };
+    if (!rect?.width || rect.bottom < 0 || rect.top > innerHeight) return { x: innerWidth / 2, y: innerHeight / 2, title: title ?? "" };
     const copy = row.cloneNode(true);
     copy.removeAttribute("data-thread-item");
     return {
       x: rect.left + rect.width / 2,
       y: rect.top + rect.height / 2,
       title: title ?? row.innerText.split("\n")[0],
-      row: { copy, rect, background: backgroundOf(row) },
+      row: { element: row, copy, rect, background: backgroundOf(row) },
     };
   }
 
-  // --- When a thread settles -------------------------------------------------------------------
+  // --- Holding the settle until the explosion is over ------------------------------------------
 
-  // Settling in this window (the row's Settle button, the thread menu, ⌘⇧S) sends a
-  // `thread.settle` command before T3 moves the row, so the effect starts there. Settles from
-  // anywhere else (auto-settle, an agent, another window) arrive as a `thread.updated` push with
-  // `settledAt` set, read before T3 handles it. The socket opened before this script ran, so
-  // both hooks sit on prototypes. They run inside T3's own code, so they must never throw.
+  // The row's Settle button and ⌘⇧S are held back while the row charges and explodes. Then the
+  // same click or key press is replayed, so T3 settles as usual, with its "⌘Z to undo". The
+  // real row stays hidden behind the effect until then.
+  const HOLD_MS = CHARGE + 1350;
+  const CALM_HOLD_MS = 500;
+  const played = new Map();
+  let replaying = false;
+
+  const settleButtonIn = (row) => [...(row?.querySelectorAll("button") ?? [])].find((button) => button.textContent.trim() === "Settle");
+  const openThreadId = () => location.hash.split("/").pop(); // "#/<environmentId>/<threadId>"
+
+  // If the effect cannot start, the event goes on to T3 untouched.
+  function hold(event, threadId, replay) {
+    const holding = Date.now() - (played.get(threadId) ?? 0) < HOLD_MS;
+    let spot = null;
+    if (!holding) {
+      try {
+        spot = target(threadId);
+        boom(spot);
+      } catch (error) {
+        console.error("[settle-boom]", error);
+        return;
+      }
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (holding) return; // a second press while this thread is already exploding
+    played.set(threadId, Date.now());
+    if (spot.row) spot.row.element.style.visibility = "hidden";
+    // A timer, not the animation, releases it: a hidden window pauses animation frames.
+    setTimeout(() => {
+      replaying = true;
+      try {
+        replay();
+      } finally {
+        replaying = false;
+      }
+      // If T3 keeps the element for the Settled section, or the settle did not happen, show it.
+      if (spot.row) setTimeout(() => (spot.row.element.style.visibility = ""), 400);
+    }, reducedMotion.matches ? CALM_HOLD_MS : HOLD_MS);
+  }
+
+  addEventListener(
+    "click",
+    (event) => {
+      if (replaying || !event.isTrusted) return;
+      const button = event.target instanceof Element ? event.target.closest("button") : null;
+      const row = button?.closest(ROW);
+      if (!row || button.textContent.trim() !== "Settle") return;
+      const threadId = threadIdOf(row);
+      hold(event, threadId, () => (button.isConnected ? button : settleButtonIn(rowFor(threadId)))?.click());
+    },
+    true,
+  );
+
+  // T3's default shortcut. A remapped one is not held; it settles at once, like the menu.
+  addEventListener(
+    "keydown",
+    (event) => {
+      if (replaying || !event.isTrusted || event.defaultPrevented || event.repeat) return;
+      if (!(event.metaKey && event.shiftKey && !event.altKey && !event.ctrlKey && event.code === "KeyS")) return;
+      const from = event.target instanceof Element ? event.target : document.body;
+      if (from.closest(".xterm, [class*='terminal' i]")) return; // T3 ignores it in a terminal
+      const threadId = openThreadId();
+      if (!rowFor(threadId)) return;
+      const init = { key: event.key, code: event.code, keyCode: event.keyCode, metaKey: true, shiftKey: true, bubbles: true, cancelable: true, composed: true };
+      hold(event, threadId, () => {
+        if (openThreadId() === threadId) (from.isConnected ? from : document.body).dispatchEvent(new KeyboardEvent("keydown", init));
+        else settleButtonIn(rowFor(threadId))?.click();
+      });
+    },
+    true,
+  );
+
+  // --- When a thread settles anyway ------------------------------------------------------------
+
+  // The thread menu is a native menu, so its Settle cannot be held: T3 sends a `thread.settle`
+  // command and moves the row right after, so the effect starts on a copy of the row. Settles
+  // from anywhere else (auto-settle, an agent, another window) arrive as a `thread.updated` push
+  // with `settledAt` set, read before T3 handles it. The socket opened before this script ran,
+  // so both hooks sit on prototypes. They run inside T3's own code, so they must never throw.
   const FRESH_MS = 30_000;
+  const PLAYED_MS = 5_000;
   const seen = new Set();
-  const sent = new Map();
+  const playedRecently = (threadId) => Date.now() - (played.get(threadId) ?? 0) < HOLD_MS + PLAYED_MS;
 
   const guard = (fn) => (...args) => {
     try {
@@ -69,8 +148,8 @@ if (!window.t3SettleBoom) {
 
   const onSend = guard((text) => {
     const command = JSON.parse(text).payload;
-    if (command?.type !== "thread.settle") return;
-    sent.set(command.threadId, Date.now());
+    if (command?.type !== "thread.settle" || playedRecently(command.threadId)) return;
+    played.set(command.threadId, Date.now());
     boom(target(command.threadId));
   });
 
@@ -82,8 +161,8 @@ if (!window.t3SettleBoom) {
       const key = `${thread.id}@${thread.settledAt}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      if (Date.now() - Date.parse(thread.settledAt) >= FRESH_MS) continue;
-      if (Date.now() - (sent.get(thread.id) ?? 0) < FRESH_MS) continue;
+      if (Date.now() - Date.parse(thread.settledAt) >= FRESH_MS || playedRecently(thread.id)) continue;
+      played.set(thread.id, Date.now());
       boom(target(thread.id, thread.title));
     }
   });
