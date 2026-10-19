@@ -10,8 +10,9 @@ const { test } = require("node:test");
 const CLI = path.join(__dirname, "..", "bin", "t3ext.cjs");
 const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8" });
 
-function fixtureApp() {
+function fixtureApp(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "t3ext-cli-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const app = path.join(root, "Fixture's App.app");
   fs.mkdirSync(path.join(app, "Contents", "Resources"), { recursive: true });
   fs.writeFileSync(
@@ -22,8 +23,8 @@ function fixtureApp() {
   return { root, app };
 }
 
-test("install-launcher --dry-run prints the bundle without writing it", () => {
-  const { root, app } = fixtureApp();
+test("install-launcher --dry-run prints the bundle without writing it", (t) => {
+  const { root, app } = fixtureApp(t);
   const result = run("install-launcher", "--dry-run", "--app", app, "--dest", root);
   assert.equal(result.status, 0, result.stderr);
   const bundle = path.join(root, "T3 Code+.app");
@@ -33,8 +34,8 @@ test("install-launcher --dry-run prints the bundle without writing it", () => {
   assert.equal(fs.existsSync(bundle), false, "dry run writes nothing");
 });
 
-test("install-launcher builds a valid ad-hoc signed app that quotes odd paths", () => {
-  const { root, app } = fixtureApp();
+test("install-launcher builds a valid ad-hoc signed app that quotes odd paths", (t) => {
+  const { root, app } = fixtureApp(t);
   const result = run("install-launcher", "--app", app, "--dest", root);
   assert.equal(result.status, 0, result.stderr);
   const bundle = path.join(root, "T3 Code+.app");

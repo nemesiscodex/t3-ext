@@ -14,8 +14,9 @@ function writeExtension(dir, files) {
   for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), content);
 }
 
-function setup() {
+function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "t3ext-registry-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
   const extensions = path.join(home, "extensions");
   writeExtension(path.join(extensions, "alpha"), {
@@ -31,8 +32,8 @@ function setup() {
   return { root, home, extensions, registry: createRegistry({ home, builtinDir: BUILTIN_DIR }) };
 }
 
-test("lists the builtin manager first, then user extensions; skips dotfiles and plain files", () => {
-  const { registry } = setup();
+test("lists the builtin manager first, then user extensions; skips dotfiles and plain files", (t) => {
+  const { registry } = setup(t);
   const list = registry.list();
   assert.deepEqual(list.map((e) => e.id), ["builtin:extension-manager", "alpha", "broken", "linked"]);
   assert.equal(list[0].builtin, true);
@@ -42,15 +43,15 @@ test("lists the builtin manager first, then user extensions; skips dotfiles and 
   assert.equal(list.every((e) => e.enabled), true, "everything is enabled without a state file");
 });
 
-test("an invalid manifest is listed with an error and no manifest", () => {
-  const { registry } = setup();
+test("an invalid manifest is listed with an error and no manifest", (t) => {
+  const { registry } = setup(t);
   const broken = registry.get("broken");
   assert.equal(broken.manifest, null);
   assert.match(broken.error, /not valid JSON/);
 });
 
-test("setEnabled persists to extensions.json", () => {
-  const { registry, home } = setup();
+test("setEnabled persists to extensions.json", (t) => {
+  const { registry, home } = setup(t);
   registry.setEnabled("alpha", false);
   registry.setEnabled("builtin:extension-manager", false);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"))), { disabled: ["alpha", "builtin:extension-manager"] });
@@ -60,8 +61,8 @@ test("setEnabled persists to extensions.json", () => {
   assert.throws(() => registry.setEnabled("nope", false), /No extension with id "nope"/);
 });
 
-test("add copies a valid folder and refuses duplicates and non-extensions", () => {
-  const { registry, root, extensions } = setup();
+test("add copies a valid folder and refuses duplicates and non-extensions", (t) => {
+  const { registry, root, extensions } = setup(t);
   writeExtension(path.join(root, "incoming", "beta"), { "manifest.json": JSON.stringify({ name: "Beta" }), "style.css": "a{}" });
   const added = registry.add(path.join(root, "incoming", "beta"));
   assert.equal(added.id, "beta");
@@ -72,8 +73,8 @@ test("add copies a valid folder and refuses duplicates and non-extensions", () =
   assert.throws(() => registry.add(path.join(root, "incoming", "empty")), /manifest.json is missing/);
 });
 
-test("runtime errors are kept per file, and a cleared file drops only its own error", () => {
-  const { registry } = setup();
+test("runtime errors are kept per file, and a cleared file drops only its own error", (t) => {
+  const { registry } = setup(t);
   registry.recordError("alpha", "main.js", "boom");
   registry.recordError("alpha", "renderer.js", "EACCES");
   assert.equal(registry.get("alpha").error, "main.js: boom\nrenderer.js: EACCES");
@@ -81,8 +82,8 @@ test("runtime errors are kept per file, and a cleared file drops only its own er
   assert.equal(registry.get("alpha").error, "main.js: boom");
 });
 
-test("forget clears disabled state and runtime errors", () => {
-  const { registry, home } = setup();
+test("forget clears disabled state and runtime errors", (t) => {
+  const { registry, home } = setup(t);
   registry.setEnabled("alpha", false);
   registry.recordError("alpha", "main.js", "boom");
   assert.equal(registry.get("alpha").error, "main.js: boom");
@@ -91,8 +92,8 @@ test("forget clears disabled state and runtime errors", () => {
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"))).disabled, []);
 });
 
-test("a part counts only when it is a regular file, following symlinks; anything else is an error", () => {
-  const { registry, root, extensions } = setup();
+test("a part counts only when it is a regular file, following symlinks; anything else is an error", (t) => {
+  const { registry, root, extensions } = setup(t);
   const dir = path.join(extensions, "odd");
   writeExtension(dir, { "manifest.json": JSON.stringify({ name: "Odd" }) });
   fs.mkdirSync(path.join(dir, "renderer.js"));
