@@ -1,0 +1,5 @@
+{
+  "name": "Thread Doom",
+  "version": "1.0.0",
+  "description": "Plays Doom over a thread while its agent works, and pauses it when the agent needs you or is done"
+}
