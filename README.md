@@ -145,6 +145,14 @@ Edit, then reload the window. **Remove** in the manager moves only the link to t
 mkdir -p ~/.t3/extensions && ln -s "$PWD/examples/settle-boom" ~/.t3/extensions/settle-boom
 ```
 
+### Example: Project Groups
+
+`examples/project-groups` replaces the sidebar's project filter with one that selects several projects at once and saves them as named groups with an icon. It reads T3's own filter and project list from React, uses T3's filter when one project is selected, and hides the other rows when several are. See [its README](examples/project-groups/README.md). To try it, from this repository:
+
+```sh
+mkdir -p ~/.t3/extensions && ln -s "$PWD/examples/project-groups" ~/.t3/extensions/project-groups
+```
+
 ### The built-in extension manager
 
 The manager is itself an extension, in `host/builtin/extension-manager`. You can disable it but not remove it. If you disable it, **Extensions > Manage Extensions…** offers to turn it back on. The settings item is added on a best-effort basis by matching T3's settings sidebar. If a T3 update changes that sidebar, the menu keeps working.
