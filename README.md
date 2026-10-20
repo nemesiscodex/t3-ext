@@ -2,100 +2,136 @@
 
 # t3-extensions
 
-Load your own extensions into T3 Code on macOS without changing the T3 Code app.
+Add your own features to [T3 Code](https://t3.codes) ([source](https://github.com/pingdotgg/t3code)) on macOS, without forking it and without changing the installed app.
 
-You start T3 Code through a small launcher app, **T3 Code+**. The launcher starts the real T3 Code and loads an extension host into it, or loads the host into a T3 Code that is already running. The host then loads every extension folder in `~/.t3/extensions`. Each extension can add CSS and JavaScript to the T3 window, and it can run code in T3's main process. An **Extensions** menu and an **Extensions** item in Settings let you turn extensions on or off, add them, and remove them.
+An extension is a folder with some CSS, some JavaScript, or both. You drop it in `~/.t3/extensions`, and it runs inside the official T3 Code you already use, which keeps its auto-updates and its code signature. An **Extensions** menu and an **Extensions** item in Settings let you turn extensions on or off, add them, and remove them.
 
 ![Extension manager](docs/manager.png)
 
-## How it works
+> [!NOTE]
+> This is an unofficial project. It is not made or supported by the T3 Code team. Extensions reach into T3 Code's interface, which can change in any release, so an update can break an extension.
 
-`t3ext launch` (what T3 Code+ runs) and `t3ext attach` first check which of these states T3 Code is in, and act on it:
+## What extensions can do
 
-| T3 Code is | `launch` | `attach` |
-| --- | --- | --- |
-| not running | starts it with `--inspect-brk` and loads the host before T3's own code | does nothing (with `--wait <ms>`, first waits that long for T3 to start) |
-| still starting | waits until macOS reports it finished launching, then checks again | same |
-| running without the host | sends `SIGUSR1`, loads the host over the inspector on port 9229, then brings T3 to the front | the same, but never brings T3 to the front |
-| running with the host | brings it to the front | does nothing |
+The [`examples`](examples) folder has four extensions you can try in a minute:
 
-Both commands hold a per-app lock while they act, so two launches at once start or attach only once. `launch` brings T3 Code to the front whenever it is running when `launch` ends, even after a failure.
+| Extension | What it does |
+| --- | --- |
+| [Project Groups](examples/project-groups) | Filter the sidebar by several projects at once, and save them as named groups with an icon. |
+| [Streaming Mode](examples/streaming-mode) | An eye button that blurs the names of your private projects while you stream or share your screen. |
+| [Settle Boom](examples/settle-boom) | A small explosion and a synthesized boom when you settle a thread. |
+| [Thread Doom](examples/thread-doom) | Play Doom over a thread while its agent works. The game pauses when the agent needs you or finishes. |
 
-### Starting T3 Code
+<table><tr>
+<td><img src="examples/project-groups/preview.png" alt="Project Groups" height="320"></td>
+<td><img src="examples/streaming-mode/preview.png" alt="Streaming Mode" height="320"></td>
+</tr></table>
 
-The launcher runs `open -a "T3 Code (Nightly)" --args --inspect-brk=127.0.0.1:<random port>`. T3 Code then starts paused, before its own code runs. The launcher connects to the Node inspector on that port and calls `require("<this repo>/host/index.cjs").start()` inside T3's main process. Then it lets T3 continue and closes the inspector.
+## Quick start
 
-The T3 Code bundle is never modified. We tried patching `app.asar` first. Any edit inside the bundle breaks its code signature, and macOS then refuses to open the app ("is damaged and can't be opened"). Re-signing the app ourselves is not an option either: the app uses entitlements and a provisioning profile tied to the T3 team. Without them, passkeys, keychain access and auto-update break. `NODE_OPTIONS=--require` is also rejected: Electron ignores most `NODE_OPTIONS` in packaged apps. The inspector route needs no bundle edit, so updates and the signature stay intact. It only needs the `EnableNodeCliInspectArguments` Electron fuse, which T3 Code ships turned on.
-
-The launcher starts T3 through LaunchServices (`open`), not as its own child process. So T3 stays its own "responsible process" for macOS privacy prompts, and its existing microphone, camera and file permissions keep applying.
-
-### Attaching to a running T3 Code
-
-T3 Code also starts without the launcher, from the Dock, Spotlight or a `t3code://` link, and when it restarts itself after an auto-update. For these, `t3ext attach` waits until macOS reports that T3 finished launching, because a `SIGUSR1` that arrives before Node installs its handler quits T3. Then it sends `SIGUSR1` to T3's main process. Node opens its inspector on `127.0.0.1:9229`. The launcher checks that the inspector belongs to that pid, calls `require("<this repo>/host/index.cjs").start()` through `Runtime.evaluate`, and closes the inspector again. The host then:
-
-- reloads every open T3 Code window, so the preload adds `window.t3ext` and each extension's `style.css` and `renderer.js` load;
-- sets T3's current application menu again, so the **Extensions** menu appears;
-- runs the `main.js` of each enabled extension.
-
-Attaching late has costs. Each open window reloads once. `main.js` runs after T3's own startup, not before it. The port is always 9229, because Node offers no other port for `SIGUSR1`. The inspector listens on it for about a second. If another program holds port 9229, attach stops with a message that names the program, and T3 keeps running without extensions.
-
-Starting the host a second time does nothing, and the launcher checks for the host before it signals. The host listens on a Unix socket named after T3's pid (`t3ext-host-<pid>.sock` in your user temp folder) and answers with that pid. Only a live process can answer, so a socket left behind by a crashed T3 whose pid a new T3 reuses reads as "no host".
-
-### What an update could break
-
-Both routes need the `EnableNodeCliInspectArguments` Electron fuse, which T3 Code ships turned on. It is the one thing a T3 Code update could take away. `launch` and `attach` read the fuse from the app's Electron Framework binary first. If it is off, they stop with a message that says so. Neither `--inspect-brk` nor `SIGUSR1` would open the inspector then, and a `SIGUSR1` that T3 does not handle quits it. `launch` then opens T3 Code normally, without extensions. `t3ext status` shows the fuse.
-
-## Install
-
-You need this repository checked out somewhere permanent. The launcher app refers to it by absolute path.
+You need macOS, T3 Code installed in `/Applications`, and Node.js 22 or later.
 
 ```sh
+git clone https://github.com/nemesiscodex/t3-ext.git ~/t3-extensions
+cd ~/t3-extensions
 node bin/t3ext.cjs install-launcher
 ```
 
-This builds `~/Applications/T3 Code+.app` with T3's icon, and signs it ad hoc. Add `--dry-run` to print the files without writing them. Use `--app <path>` for a T3 Code that is not at `/Applications/T3 Code (Nightly).app`.
+This builds a small app, **T3 Code+**, in `~/Applications`. From now on, open T3 Code+ (from Spotlight, or pin it to the Dock) instead of T3 Code. The launcher refers to this checkout by its path, so keep it where you cloned it.
 
-From now on, open **T3 Code+** (from Spotlight, or pin it to the Dock) instead of T3 Code. If T3 Code is already running without extensions, T3 Code+ loads them into it and brings it to the front.
+The commands look for `/Applications/T3 Code (Nightly).app`. If your T3 Code is somewhere else or has another name, add `--app "/Applications/<name>.app"` to every command.
 
-T3 Code+ runs the launcher with T3's own binary in Node mode (`ELECTRON_RUN_AS_NODE=1`), so it does not depend on the Node.js in your shell. If that fails, it falls back to the `node` you ran `install-launcher` with. Launcher output goes to `~/Library/Logs/t3ext.log`. On failure you get a notification.
-
-You can also launch from a terminal:
+Try an example:
 
 ```sh
-node bin/t3ext.cjs launch
+mkdir -p ~/.t3/extensions
+ln -s "$PWD/examples/settle-boom" ~/.t3/extensions/settle-boom
 ```
 
-To load extensions into the running T3 Code without bringing it to the front:
+Then choose **Extensions > Reload Window** in T3 Code, and settle a thread.
 
-```sh
-node bin/t3ext.cjs attach
+## How it works
+
+**In one sentence:** T3 Code is an Electron app, and Electron includes a debugger, like the DevTools console in Chrome. The launcher opens that debugger, runs one line of code inside T3 Code, and closes the debugger again.
+
+Think of a website open in Chrome. You can open DevTools, type JavaScript in the console, and change the page, while the website's server stays the same. T3 Code works the same way. Electron is Chrome plus Node.js, and it has the same kind of debugger. The launcher connects to it and types one line:
+
+```js
+require("/path/to/t3-extensions/host/index.cjs").start()
 ```
 
-### Re-attach after updates
+That line loads the **host**, the part of this project that runs inside T3 Code. From there, the host uses Electron's normal APIs, the same ones T3 Code uses for itself, to load your extensions.
 
-When T3 Code updates itself, it restarts without extensions. The LaunchAgent puts them back:
-
-```sh
-node bin/t3ext.cjs install-agent
+```mermaid
+sequenceDiagram
+    participant You
+    participant L as T3 Code+ (launcher)
+    participant T as T3 Code
+    You->>L: open T3 Code+
+    L->>T: open T3 Code with the debugger on, paused before its own code
+    L->>T: connect to the debugger on 127.0.0.1
+    L->>T: run require("…/host/index.cjs").start()
+    Note over T: the host now runs inside T3 Code
+    L->>T: resume, and close the debugger
+    Note over T: T3 Code starts as usual,<br/>with an Extensions menu,<br/>and every window gets the extensions' CSS and JS
 ```
 
-This writes `~/Library/LaunchAgents/dev.t3ext.reattach.plist` and loads it with `launchctl bootstrap gui/$UID`. The agent watches T3's `Contents/Info.plist`, which an update replaces. When the file changes, the agent runs `t3ext attach --wait 120000`. That waits up to two minutes for T3 to start again, then attaches. Within those two minutes it also keeps waiting if T3 quits and starts again, and retries while the update is still replacing files. If T3 does not start in that time (for example, it updated while closed), the agent exits quietly. It never brings T3 to the front, and it does nothing when the host is already loaded. It runs on T3's own binary as Node, like T3 Code+. While an update is still replacing the app, it retries for about 30 seconds, then uses the `node` you ran `install-agent` with. Both first read T3's `RunAsNode` fuse with that `node`: with the fuse off, T3's binary would start the T3 app instead of Node, so they skip it. Output goes to `~/Library/Logs/t3ext.log`. You get a notification only when attaching fails. Add `--dry-run` to print the plist and the `launchctl` commands without running them.
+If T3 Code is already running, the launcher does the same thing a different way. It sends the `SIGUSR1` signal, which tells Node to open its debugger, and then runs the same line. The open windows reload once so the extensions reach them.
 
-The tests check the plist and run the agent's command by hand. A real launchd trigger on a real update has not been tested. The agent does not react to a start from the Dock, Spotlight or a link. Run `t3ext attach`, or open T3 Code+, to load extensions then.
+### Why one line is enough
 
-To remove the agent:
+An Electron app has two layers:
 
-```sh
-node bin/t3ext.cjs uninstall-agent
-```
+- **The main process** runs Node.js with full access to your Mac. It creates every window and owns the menus, files and settings. The host runs here.
+- **The windows** are web pages: the HTML, CSS and React you see. The main process can add CSS and JavaScript to them.
 
-### Check the setup
+Getting code into the main process is the hard part. After that, the host adds each extension's `style.css` and `renderer.js` to every T3 Code window, adds the **Extensions** menu, and runs each extension's `main.js`.
 
-```sh
-node bin/t3ext.cjs status
-```
+### Why macOS allows it
 
-This prints the T3 Code version, its pid, whether the extension host is loaded, whether the inspect fuse is on, and whether the LaunchAgent and T3 Code+ are installed. It only reads, and never signals T3.
+| | |
+| --- | --- |
+| ✗ **Editing the app's files** | macOS checks the code signature of the files on disk. If one byte changes, macOS says the app "is damaged and can't be opened". |
+| ✓ **Adding code in memory** | The signature covers the files, not what the app loads while it runs. The files never change, so the signature stays valid. |
+| ✓ **The app allows the debugger** | Electron has build-time switches, called [fuses](https://www.electronjs.org/docs/latest/tutorial/fuses). One of them allows the debugger flags, and T3 Code ships with it on. The launcher checks it before doing anything. |
+| ✓ **Same user, same Mac** | Your own programs can start your apps with flags and send them signals. No admin rights and no exploit are needed. |
+
+**The catch:** this works only while T3 Code keeps that fuse on. If an update turns it off, T3 Code opens normally without extensions, and the launcher tells you why. It also means any program that runs as you could do the same thing. Many Electron apps turn the fuse off for that reason.
+
+[docs/internals.md](docs/internals.md) has the full details: every state the launcher handles, the costs of loading late, how the launcher knows the host is loaded, and a map of the source.
+
+## Why not fork T3 Code?
+
+T3 Code is open source, so a fork is the obvious way to add features. We chose a separate launcher because a fork costs more than it first seems to.
+
+| | Fork of T3 Code | t3-extensions |
+| --- | --- | --- |
+| **App you run** | Your own build, signed by you | The official T3 Code, unchanged |
+| **Updates** | You merge every T3 Code release into the fork and ship a new build | T3 Code updates itself as usual, and extensions keep working |
+| **Passkeys, keychain, auto-update** | Break unless you have T3's signing team, entitlements and provisioning profile | Keep working, because the app is still T3's |
+| **macOS permissions** | A different app, so you grant microphone, camera and file access again | T3 Code keeps the permissions you already gave it |
+| **Sharing a feature** | People switch to your build, and two forks cannot be combined | People drop a folder into `~/.t3/extensions`, and any extensions can run together |
+| **Turning it off** | Reinstall the official app | Open T3 Code directly, or disable the extension |
+| **Cost** | Changes can use T3's internal code directly | Extensions depend on T3's page structure and React internals, which are not a stable API |
+
+The last row is the honest trade-off. A fork can change anything in T3 Code's source. An extension can only reach what the running app exposes, and a T3 Code release can move it. For features that sit on top of T3 Code, like the examples above, that is a good deal. For a deep change to how T3 Code works, send a pull request to T3 Code instead.
+
+## Use it day to day
+
+| Command | What it does |
+| --- | --- |
+| `node bin/t3ext.cjs install-launcher` | Builds `~/Applications/T3 Code+.app`. Add `--dry-run` to print the files without writing them. |
+| `node bin/t3ext.cjs launch` | What T3 Code+ runs: starts T3 Code with extensions, or loads them into the running T3 Code, then brings it to the front. |
+| `node bin/t3ext.cjs attach` | Loads extensions into the running T3 Code without bringing it to the front. Does nothing if they are already loaded. |
+| `node bin/t3ext.cjs status` | Prints the T3 Code version, its pid, whether extensions are loaded, whether the fuse is on, and what is installed. It only reads. |
+| `node bin/t3ext.cjs install-agent` | Installs a LaunchAgent that loads extensions again after T3 Code updates itself. |
+| `node bin/t3ext.cjs uninstall-agent` | Removes that LaunchAgent. |
+
+Run `node bin/t3ext.cjs` with no arguments for every option. Output goes to `~/Library/Logs/t3ext.log`, and you get a notification when something fails.
+
+**After an update.** When T3 Code updates itself, it restarts without extensions. Run `install-agent` once, and extensions load again by themselves after each update.
+
+**Opening T3 Code another way.** If you open T3 Code from the Dock, Spotlight or a `t3code://` link, it runs without extensions. Open T3 Code+ or run `attach` to load them.
 
 ## Write an extension
 
@@ -107,9 +143,13 @@ An extension is a folder in `~/.t3/extensions/<id>/`, or in `$T3CODE_HOME/extens
 
 Add any of these optional files:
 
-- `style.css` is inserted into every T3 Code window (`t3code://` pages only; never into web pages in the preview browser).
-- `renderer.js` runs in every T3 Code window after the page has loaded its HTML, which can be before React has rendered. Use a `MutationObserver` to wait for elements. Errors are caught and logged with the extension id.
-- `main.js` runs once in T3's main process. It runs before T3's own code when T3 Code+ starts T3, and right away when the host attaches to a running T3. If it exports a function, that function is called with `{ id, dir, electron }`. An error is caught and shown in the extension manager; T3 keeps running.
+| File | Runs in | When |
+| --- | --- | --- |
+| `style.css` | every T3 Code window (`t3code://` pages only, never web pages in the preview browser) | each time a window loads |
+| `renderer.js` | every T3 Code window | each time a window has loaded its HTML, which can be before React has rendered. Use a `MutationObserver` to wait for elements. |
+| `main.js` | T3 Code's main process, with full Node.js and Electron access | once. Before T3's own code when T3 Code+ starts T3, or right away when extensions load into a running T3. |
+
+If `main.js` exports a function, the host calls it with `{ id, dir, electron }`. Errors in any file are caught and shown in the extension manager, and T3 Code keeps running.
 
 Style your UI with T3's CSS variables, such as `var(--background)`, `var(--foreground)`, `var(--border)` and `var(--primary)`, so it follows light and dark mode.
 
@@ -123,13 +163,9 @@ await window.t3ext.add();                     // asks for a folder, then copies 
 await window.t3ext.openFolder("my-ext");      // or openFolder() for the extensions folder
 ```
 
-Changes to `style.css` and `renderer.js` apply when you reload the window (**Extensions > Reload Window**). Changes to `main.js` apply when you restart T3 Code through T3 Code+.
+Changes to `style.css` and `renderer.js` apply when you reload the window (**Extensions > Reload Window**). Changes to `main.js` apply when you restart T3 Code through T3 Code+. Enabled state lives in `~/.t3/extensions.json` as `{ "disabled": ["id", ...] }`.
 
-Enabled state lives in `~/.t3/extensions.json` as `{ "disabled": ["id", ...] }`.
-
-### Develop with a symlink
-
-Keep your extension in its own repository and link it in:
+**Develop with a symlink.** Keep your extension in its own repository and link it in:
 
 ```sh
 ln -s ~/code/my-ext ~/.t3/extensions/my-ext
@@ -137,51 +173,45 @@ ln -s ~/code/my-ext ~/.t3/extensions/my-ext
 
 Edit, then reload the window. **Remove** in the manager moves only the link to the Trash, not your repository.
 
-### Example: Settle Boom
+The examples show the common patterns: reacting to T3's own events ([Settle Boom](examples/settle-boom)), reading T3's state from React ([Project Groups](examples/project-groups), [Streaming Mode](examples/streaming-mode)), and using `main.js` to reach a frame from another origin ([Thread Doom](examples/thread-doom)).
 
-`examples/settle-boom` sets off a small explosion with a synthesized boom when a thread settles, styled after Kit Langton's [Effect Institute](https://www.effect.institute/). It is a `renderer.js` and a `style.css`, and shows how to react to T3's own events. See [its README](examples/settle-boom/README.md). To try it, from this repository:
+The extension manager is itself an extension, in [`host/builtin/extension-manager`](host/builtin/extension-manager). You can disable it but not remove it. If you disable it, **Extensions > Manage Extensions…** offers to turn it back on.
 
-```sh
-mkdir -p ~/.t3/extensions && ln -s "$PWD/examples/settle-boom" ~/.t3/extensions/settle-boom
-```
+## Security
 
-### Example: Project Groups
-
-`examples/project-groups` replaces the sidebar's project filter with one that selects several projects at once and saves them as named groups with an icon. It reads T3's own filter and project list from React, uses T3's filter when one project is selected, and hides the other rows when several are. See [its README](examples/project-groups/README.md). To try it, from this repository:
-
-```sh
-mkdir -p ~/.t3/extensions && ln -s "$PWD/examples/project-groups" ~/.t3/extensions/project-groups
-```
-
-### Example: Streaming Mode
-
-`examples/streaming-mode` adds an eye button next to the sidebar's project filter. While it is on, the names of projects whose GitHub repository is not public are blurred, so you can stream or share your screen. It reads each project's repository from T3's sidebar and asks GitHub's API, without a login, which ones are public. See [its README](examples/streaming-mode/README.md). To try it, from this repository:
-
-```sh
-mkdir -p ~/.t3/extensions && ln -s "$PWD/examples/streaming-mode" ~/.t3/extensions/streaming-mode
-```
-
-### The built-in extension manager
-
-The manager is itself an extension, in `host/builtin/extension-manager`. You can disable it but not remove it. If you disable it, **Extensions > Manage Extensions…** offers to turn it back on. The settings item is added on a best-effort basis by matching T3's settings sidebar. If a T3 update changes that sidebar, the menu keeps working.
-
-## Uninstall
-
-Run `node bin/t3ext.cjs uninstall-agent` if you installed the agent. Delete `~/Applications/T3 Code+.app`, and optionally `~/.t3/extensions` and `~/.t3/extensions.json`. T3 Code itself was never changed.
+- **Extensions have full access.** A `main.js` runs with the same rights as T3 Code, which can read your files and your agents' work. Install only extensions you trust, as you would with any program.
+- **The debugger is open for about a second.** While the host loads, the debugger listens on `127.0.0.1` (never the network). Another program running as your user could connect in that window. Such a program could already do worse things to your account.
+- **Nothing is installed in T3 Code.** Quit T3 Code and open it from the Dock, and it runs exactly as shipped.
 
 ## Known limits
 
-- When you start T3 Code from the Dock, Spotlight, Finder or a `t3code://` link, it runs without extensions until you open T3 Code+ or run `t3ext attach`. After an auto-update, the LaunchAgent attaches them, if you installed it.
-- While the host loads, the inspector listens on `127.0.0.1` for about a second. Another program running as your user could connect in that window. Such a program could already do worse things to your account.
+- When you start T3 Code from the Dock, Spotlight, Finder or a `t3code://` link, it runs without extensions until you open T3 Code+ or run `attach`. After an auto-update, the LaunchAgent loads them, if you installed it.
+- Loading into a running T3 Code reloads each open window once, and uses the fixed debugger port 9229. If another program holds that port, `attach` names the program and stops.
 - If the launcher crashes after starting T3 and before connecting, T3 stays paused with no window. Quit it and launch again. The log says what happened.
-- If a T3 Code release turns off the `EnableNodeCliInspectArguments` fuse, the launcher cannot load the host. `launch` then starts T3 normally without extensions, and both `launch` and `attach` report why.
-- The settings item depends on T3's sidebar markup (`ul[data-sidebar="menu"]` containing an "Appearance" item).
+- If a T3 Code release turns off the `EnableNodeCliInspectArguments` fuse, extensions cannot load. `launch` then starts T3 normally, and both `launch` and `attach` report why.
+- The **Extensions** item in Settings depends on T3's settings sidebar markup. If a T3 update changes it, the **Extensions** menu still works.
+- The LaunchAgent's command is tested by hand. A real launchd trigger on a real update has not been tested.
 
-## Tests
+## Uninstall
 
 ```sh
-npm test       # unit tests: registry, CLI, LaunchAgent plist, fuse reader, host presence, launch race (starts a fake app)
-npm run e2e    # clones the installed app into a temp dir and drives it over CDP: test/e2e.cjs, then test/e2e-attach.cjs
+node bin/t3ext.cjs uninstall-agent
+rm -rf ~/Applications/"T3 Code+.app"
 ```
 
-The end-to-end tests never touch the installed app. Each makes an APFS clone of the app in a temp directory, isolated with its own `HOME` and `T3CODE_HOME`. `test/e2e.cjs` opens the clone through a T3 Code+ built in the temp directory, and checks the sample extension in `test/fixtures/sample`, the menu, the manager and the settings item. `test/e2e-attach.cjs` opens the clone without the launcher, then checks `attach` (including with port 9229 taken), a second `attach`, `launch`, `status`, and the LaunchAgent's command waiting for the clone to start. When they finish, they kill every process running from the temp directory. `test/e2e.cjs` rewrites `docs/*.png`.
+Optionally delete `~/.t3/extensions` and `~/.t3/extensions.json`. T3 Code itself was never changed.
+
+## Contributing
+
+```sh
+npm test       # unit tests, no T3 Code needed
+npm run e2e    # end-to-end tests against a temporary copy of your installed T3 Code
+```
+
+The end-to-end tests never touch the installed app. See [docs/internals.md](docs/internals.md#tests) for what they check. There are no dependencies to install.
+
+New example extensions are welcome. Give each one a `README.md` that says what it does and how it finds what it needs in T3 Code, so readers can fix it when T3 changes.
+
+## License
+
+[MIT](LICENSE)
