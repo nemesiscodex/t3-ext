@@ -98,6 +98,30 @@ if (!window.t3ProjectGroups) {
     for (let i = 0; fiber && i < limit; i++, fiber = fiber.return) yield fiber;
   }
 
+  // Project favicons from the cache T3 keeps in IndexedDB, keyed like T3 keys them:
+  // JSON [environmentId, workspaceRoot, faviconPath]. T3 fills it as it loads each favicon.
+  let favicons = new Map();
+
+  function loadFavicons() {
+    const request = indexedDB.open("t3code:project-favicons");
+    // No cache yet: leave creating the database, with its schema, to T3.
+    request.onupgradeneeded = () => request.transaction.abort();
+    request.onsuccess = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("images")) return db.close();
+      const read = db.transaction("images").objectStore("images").getAll();
+      // Closing waits for the read; an open connection would block T3's next schema upgrade.
+      db.close();
+      read.onsuccess = () => {
+        const next = new Map(read.result.filter((entry) => typeof entry?.dataUrl === "string").map((entry) => [JSON.stringify([entry.environmentId, entry.cwd, entry.faviconPath || null]), entry.dataUrl]));
+        if (next.size === favicons.size && [...next].every(([key, url]) => favicons.get(key) === url)) return;
+        favicons = next;
+        apply();
+        if (popover.element) renderList();
+      };
+    };
+  }
+
   // T3's scope picker (`items`, `value`, `onValueChange`) and the sidebar's memoized project
   // catalog, which knows the member projects of each scope item. Null when either is missing.
   function readT3() {
@@ -123,6 +147,7 @@ if (!window.t3ProjectGroups) {
       key: project.projectKey,
       name: project.displayName,
       icon: project.projectIcon,
+      favicon: favicons.get(JSON.stringify([project.environmentId, project.workspaceRoot, project.faviconPath || null])) ?? null,
       refs: project.memberProjectRefs.map((ref) => `${ref.environmentId}:${ref.projectId}`),
     }));
     return { trigger, combobox, projects };
@@ -295,13 +320,15 @@ if (!window.t3ProjectGroups) {
   // A group icon: { kind: "lucide", name } or { kind: "emoji", value }.
   const groupIcon = (icon) => h("span", { className: "t3pg-glyph", "aria-hidden": "true" }, icon.kind === "emoji" ? icon.value : lucide(icon.name));
 
-  // A project's icon as T3 shows it: its chosen lucide icon, emoji or monogram.
+  // A project's icon as T3 shows it: its chosen lucide icon, emoji or monogram, else its favicon,
+  // else a monogram of its name.
   function projectIcon(project) {
     const icon = project.icon;
     const color = icon?.color ?? monogramColor(project.name);
     const content =
       icon?.kind === "emoji" ? icon.emoji
       : icon?.kind === "lucide" && ICONS[icon.name] ? lucide(icon.name)
+      : !icon && project.favicon ? h("img", { className: "t3pg-favicon", src: project.favicon, alt: "" })
       : monogram(icon?.kind === "monogram" ? icon.text : monogramText(project.name), color);
     return h("span", { className: `t3pg-glyph ${icon?.kind === "lucide" ? `text-${color}-600 dark:text-${color}-400` : ""}`, "aria-hidden": "true" }, content);
   }
@@ -326,7 +353,7 @@ if (!window.t3ProjectGroups) {
     if (button.className !== t3.trigger.className) button.className = t3.trigger.className;
     const label = view.mode === "all" ? "Filter threads by project" : `Filter threads by project: ${view.label}`;
     const count = view.mode === "all" || view.group ? 0 : view.chosen.length;
-    const signature = JSON.stringify([label, view.group?.icon, count, view.chosen?.[0]?.icon]);
+    const signature = JSON.stringify([label, view.group?.icon, count, view.chosen?.[0]?.icon, view.chosen?.[0]?.favicon]);
     if (signature === trigger.signature) return;
     trigger.signature = signature;
     button.setAttribute("aria-label", label);
@@ -345,6 +372,7 @@ if (!window.t3ProjectGroups) {
 
   function openPopover() {
     if (!readT3()) return;
+    loadFavicons();
     popover.query = "";
     popover.search = h("input", { type: "text", className: "t3pg-search-input", placeholder: "Search projects…", "aria-label": "Search projects", autocomplete: "off", spellcheck: "false" });
     popover.search.addEventListener("input", () => {
@@ -577,18 +605,23 @@ if (!window.t3ProjectGroups) {
     const remove = group ? h("button", { type: "button", className: "t3pg-button t3pg-danger", onclick: () => deleteGroup() }, "Delete") : null;
     const valid = () => draft.name.trim() && [...draft.projects].length > 0;
 
-    const checklist = h(
-      "div",
-      { className: "t3pg-checklist", role: "group", "aria-label": "Projects" },
-      t3.projects.map((project) => {
-        const box = h("input", { type: "checkbox", checked: project.refs.every((ref) => draft.projects.has(ref)) });
-        box.addEventListener("change", () => {
-          for (const ref of project.refs) box.checked ? draft.projects.add(ref) : draft.projects.delete(ref);
-          refresh();
-        });
-        return h("label", { className: "t3pg-check-row" }, box, projectIcon(project), h("span", { className: "t3pg-label" }, project.name));
-      }),
-    );
+    const rows = t3.projects.map((project) => {
+      const box = h("input", { type: "checkbox", checked: project.refs.every((ref) => draft.projects.has(ref)) });
+      box.addEventListener("change", () => {
+        for (const ref of project.refs) box.checked ? draft.projects.add(ref) : draft.projects.delete(ref);
+        refresh();
+      });
+      return { project, box, row: h("label", { className: "t3pg-check-row" }, box, projectIcon(project), h("span", { className: "t3pg-label" }, project.name)) };
+    });
+    const noMatch = h("div", { className: "t3pg-empty", hidden: true }, "No matching projects");
+    const checklist = h("div", { className: "t3pg-checklist", role: "group", "aria-label": "Projects" }, rows.map(({ row }) => row), noMatch);
+    const search = h("input", { type: "text", className: "t3pg-search-input", placeholder: "Search projects…", "aria-label": "Search projects", autocomplete: "off", spellcheck: "false" });
+    const visibleRows = () => rows.filter(({ row }) => !row.hidden);
+    search.addEventListener("input", () => {
+      const query = search.value.trim().toLowerCase();
+      for (const { project, row } of rows) row.hidden = !project.name.toLowerCase().includes(query);
+      noMatch.hidden = visibleRows().length > 0;
+    });
 
     function refresh() {
       preview.replaceChildren(groupIcon(draft.icon));
@@ -649,20 +682,28 @@ if (!window.t3ProjectGroups) {
       h("div", { className: "t3pg-dialog-head" }, h("h2", { className: "t3pg-title" }, title), h("p", { className: "t3pg-hint" }, "Filter the sidebar by several projects at once.")),
       h("div", { className: "t3pg-field" }, h("span", { className: "t3pg-field-label" }, "Name"), h("div", { className: "t3pg-name-row" }, preview, name)),
       h("div", { className: "t3pg-field" }, h("span", { className: "t3pg-field-label" }, "Icon"), tabs, grid),
-      h("div", { className: "t3pg-field" }, h("span", { className: "t3pg-field-label" }, "Projects"), checklist),
+      h("div", { className: "t3pg-field" }, h("span", { className: "t3pg-field-label" }, "Projects"), h("div", { className: "t3pg-projects" }, h("div", { className: "t3pg-search" }, lucide("search"), search), checklist)),
       h("div", { className: "t3pg-actions" }, remove, h("span", { className: "t3pg-spacer" }), h("button", { type: "button", className: "t3pg-button", onclick: () => close() }, "Cancel"), save),
     );
     const backdrop = h("div", { className: "t3pg-backdrop dialog-backdrop", onclick: () => close() });
 
     function onKey(event) {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && event.target === search && search.value) {
+        // The first Escape clears the search, the next one cancels.
+        event.preventDefault();
+        search.value = "";
+        search.dispatchEvent(new Event("input"));
+      } else if (event.key === "Escape") {
         event.preventDefault();
         close();
       } else if (event.key === "Enter" && event.target === name) {
         event.preventDefault();
         submit();
+      } else if (event.key === "Enter" && event.target === search) {
+        event.preventDefault();
+        visibleRows()[0]?.box.click();
       } else if (event.key === "Tab") {
-        const focusable = [...dialog.querySelectorAll("button:not(:disabled), input")];
+        const focusable = [...dialog.querySelectorAll("button:not(:disabled), input")].filter((node) => !node.closest("[hidden]"));
         const at = focusable.indexOf(document.activeElement);
         const next = event.shiftKey ? (at <= 0 ? focusable.length - 1 : at - 1) : at === focusable.length - 1 ? 0 : at + 1;
         event.preventDefault();
@@ -678,6 +719,8 @@ if (!window.t3ProjectGroups) {
     addEventListener("focusin", keepFocus, true);
     document.body.append(backdrop, dialog);
     refresh();
+    // Keep the list's height while searching, so the centered dialog does not jump.
+    checklist.style.minHeight = `${checklist.offsetHeight}px`;
     name.focus();
   }
 
@@ -696,6 +739,7 @@ if (!window.t3ProjectGroups) {
       console.error(LOG, error);
     }
   }).observe(document.documentElement, { childList: true, subtree: true });
+  loadFavicons();
 
   // Another T3 window changed the groups or the filter.
   addEventListener("storage", (event) => {
@@ -712,7 +756,7 @@ if (!window.t3ProjectGroups) {
     get groups() {
       return structuredClone(state.groups);
     },
-    // T3's projects: { key (T3's scope key), name, icon, refs: ["<environmentId>:<projectId>"] }.
+    // T3's projects: { key (T3's scope key), name, icon, favicon (data URL or null), refs: ["<environmentId>:<projectId>"] }.
     catalog: () => readT3()?.projects ?? null,
     // { kind: "all" } | { kind: "group", id } | { kind: "projects", projects: [ref, ...] }
     setFilter,

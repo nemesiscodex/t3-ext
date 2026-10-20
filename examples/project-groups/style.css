@@ -29,6 +29,13 @@
   line-height: 1;
 }
 
+.t3pg-favicon {
+  width: 100%;
+  height: 100%;
+  border-radius: 25%;
+  object-fit: contain;
+}
+
 .t3pg-monogram {
   width: 100%;
   height: 100%;
@@ -397,14 +404,25 @@
   outline-offset: -2px;
 }
 
+.t3pg-projects {
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius, 8px);
+}
+
+.t3pg-projects .t3pg-search {
+  margin: 6px 10px 0;
+}
+
 .t3pg-checklist {
   display: flex;
   flex-direction: column;
   max-height: 200px;
   overflow-y: auto;
   padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: var(--control-radius, 8px);
+}
+
+.t3pg-check-row[hidden] {
+  display: none;
 }
 
 .t3pg-check-row {

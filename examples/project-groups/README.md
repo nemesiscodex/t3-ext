@@ -14,11 +14,11 @@ The filter button next to the sidebar search opens a menu with:
 - **Projects**: every project with a checkbox and a settings button. Checking projects filters by all of them at once. The settings button, or a right-click on the project, opens T3's settings for that project, as in T3's own menu. If a group is active, checking or unchecking a project starts a new selection from that group's projects.
 - **Save as group…** when two or more projects are checked.
 
-The group editor asks for a name, an icon and the projects. The icons and emoji are the same ones T3 offers for a project icon. **Delete** removes an existing group; click it twice to confirm. Deleting the active group shows all projects again.
+The group editor asks for a name, an icon and the projects. **Search projects…** above the project list narrows it by name; checked projects stay checked while the search hides them. The icons and emoji are the same ones T3 offers for a project icon. **Delete** removes an existing group; click it twice to confirm. Deleting the active group shows all projects again.
 
 The button shows the active filter: T3's filter icon for all projects, the group's icon for a group, the project's icon for one project, and a small count for several projects. Its tooltip names the filter, such as "Filter threads by project: Acme".
 
-Keyboard: Enter, Space or Down on the button opens the menu. Up and Down move between rows, Enter or Space picks a row, Right moves to a group's edit button or a project's settings button, and Escape closes the menu. In the editor, Enter in the name saves and Escape cancels.
+Keyboard: Enter, Space or Down on the button opens the menu. Up and Down move between rows, Enter or Space picks a row, Right moves to a group's edit button or a project's settings button, and Escape closes the menu. In the editor, Enter in the name saves, Enter in the project search checks or unchecks the first match, and Escape cancels; with text in the project search, the first Escape clears it.
 
 The groups and the filter are saved in the window's `localStorage` under `t3ext.project-groups`, so they survive a reload. Other open T3 windows pick up a change through the `storage` event.
 
