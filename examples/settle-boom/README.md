@@ -11,7 +11,7 @@ When you settle a thread, its sidebar row shakes, charges up and explodes, with 
 3. **Rings:** three thin rings expand, the middle one dashed and turning.
 4. **Dot grid:** a shock wave lights up a dot grid as it passes.
 5. **Debris:** sparks streak out, and glyphs fly out, flicker through `@#$%&*/=-+?!~<>\|█▓▒░` and cool into squares.
-6. **Label:** a "■ SETTLED" label with the thread's title resolves letter by letter, then blurs away.
+6. **Label:** a "■ SETTLED" label with the thread's title resolves letter by letter, then blurs away. The label is drawn like a T3 tooltip, in the colors of the current theme.
 7. **Shake:** the window shakes slightly.
 
 The sound has four parts:

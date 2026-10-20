@@ -17,20 +17,27 @@
   will-change: transform, filter, opacity;
 }
 
+/* The surface copies T3's own tooltip (bg-popover, border, rounded-md, text-xs), so it follows
+   the active theme. */
 .t3-settle-boom-label {
   position: fixed;
   z-index: 2147483647;
   pointer-events: none;
   opacity: 0;
-  padding: 6px 10px 7px;
-  border: 1px solid rgba(241, 239, 232, 0.22);
-  background: rgba(0, 0, 0, 0.92);
-  color: rgb(241, 239, 232);
-  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: 5px 8px 6px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius, 0.625rem) - 2px);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: 12px;
+  line-height: 1.375;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 5%), 0 2px 4px -2px rgb(0 0 0 / 5%);
 }
 
+/* Monospace keeps the word's width steady while its letters resolve out of glitch glyphs. */
 .t3-settle-boom-word {
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.32em;
@@ -40,7 +47,7 @@
 .t3-settle-boom-word::before {
   content: "■";
   margin-right: 0.7em;
-  color: rgb(134, 239, 172);
+  color: var(--success, rgb(16, 185, 129));
   letter-spacing: 0;
 }
 
@@ -49,11 +56,10 @@
 }
 
 .t3-settle-boom-title {
-  margin-top: 3px;
+  margin-top: 2px;
   max-width: 36ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
-  color: rgba(241, 239, 232, 0.55);
+  color: var(--muted-foreground);
 }
