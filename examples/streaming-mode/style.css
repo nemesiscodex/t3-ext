@@ -1,0 +1,30 @@
+[data-t3sm-blur] {
+  filter: blur(5px);
+  user-select: none;
+}
+
+.t3sm-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+[data-t3sm-toggle][aria-pressed="true"] {
+  color: var(--primary);
+}
+
+[data-t3sm-checking] .t3sm-icon {
+  animation: t3sm-pulse 1s ease-in-out infinite;
+}
+
+@keyframes t3sm-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-t3sm-checking] .t3sm-icon {
+    animation: none;
+  }
+}

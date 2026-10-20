@@ -19,7 +19,7 @@ const END = "// </icons>";
 
 // T3's project icon picker list, in its order, then the icons this extension's own UI uses.
 const PICKER = ["folder-code", "code-2", "terminal", "globe-2", "server", "database", "bot", "sparkles", "smartphone", "monitor", "cloud-cog", "package", "book-open", "flask-conical", "shield-check", "rocket", "gamepad-2", "music", "image", "shopping-bag", "git-branch", "workflow", "wrench", "layers-3"];
-const UI = ["list-filter", "folder", "plus", "pencil", "check", "search"];
+const UI = ["list-filter", "folder", "plus", "pencil", "settings", "check", "search"];
 
 const pascal = (name) => name.split("-").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join("");
 const kebab = (name) => (name.match(/[A-Z][a-z]*|[0-9]+[a-z]*/g) ?? []).join("-").toLowerCase();

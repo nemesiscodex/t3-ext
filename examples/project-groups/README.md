@@ -11,14 +11,14 @@ The filter button next to the sidebar search opens a menu with:
 - **Search projects…** to narrow the list. Typing on any row also types here.
 - **All projects** to clear the filter.
 - **Groups**: each group with its icon, its number of projects and an edit button. Click a group to filter by it. **New group…** opens the group editor.
-- **Projects**: every project with a checkbox. Checking projects filters by all of them at once. If a group is active, checking or unchecking a project starts a new selection from that group's projects.
+- **Projects**: every project with a checkbox and a settings button. Checking projects filters by all of them at once. The settings button, or a right-click on the project, opens T3's settings for that project, as in T3's own menu. If a group is active, checking or unchecking a project starts a new selection from that group's projects.
 - **Save as group…** when two or more projects are checked.
 
 The group editor asks for a name, an icon and the projects. The icons and emoji are the same ones T3 offers for a project icon. **Delete** removes an existing group; click it twice to confirm. Deleting the active group shows all projects again.
 
 The button shows the active filter: T3's filter icon for all projects, the group's icon for a group, the project's icon for one project, and a small count for several projects. Its tooltip names the filter, such as "Filter threads by project: Acme".
 
-Keyboard: Enter, Space or Down on the button opens the menu. Up and Down move between rows, Enter or Space picks a row, Right moves to a group's edit button, and Escape closes the menu. In the editor, Enter in the name saves and Escape cancels.
+Keyboard: Enter, Space or Down on the button opens the menu. Up and Down move between rows, Enter or Space picks a row, Right moves to a group's edit button or a project's settings button, and Escape closes the menu. In the editor, Enter in the name saves and Escape cancels.
 
 The groups and the filter are saved in the window's `localStorage` under `t3ext.project-groups`, so they survive a reload. Other open T3 windows pick up a change through the `storage` event.
 
@@ -42,10 +42,6 @@ These apply when several projects are selected, so T3's own filter is set to all
 - The ⌘1–⌘9 jump labels number hidden threads too, and ⌘⇧[ and ⌘⇧] move through hidden threads.
 - **New thread** asks for a project from all of them, not only the group's.
 - In sidebar search, the result selected for Enter can be a hidden one.
-
-Always:
-
-- The project settings button that T3's own menu shows next to each project is not in this menu.
 
 ## Controls
 

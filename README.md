@@ -153,6 +153,14 @@ mkdir -p ~/.t3/extensions && ln -s "$PWD/examples/settle-boom" ~/.t3/extensions/
 mkdir -p ~/.t3/extensions && ln -s "$PWD/examples/project-groups" ~/.t3/extensions/project-groups
 ```
 
+### Example: Streaming Mode
+
+`examples/streaming-mode` adds an eye button next to the sidebar's project filter. While it is on, the names of projects whose GitHub repository is not public are blurred, so you can stream or share your screen. It reads each project's repository from T3's sidebar and asks GitHub's API, without a login, which ones are public. See [its README](examples/streaming-mode/README.md). To try it, from this repository:
+
+```sh
+mkdir -p ~/.t3/extensions && ln -s "$PWD/examples/streaming-mode" ~/.t3/extensions/streaming-mode
+```
+
 ### The built-in extension manager
 
 The manager is itself an extension, in `host/builtin/extension-manager`. You can disable it but not remove it. If you disable it, **Extensions > Manage Extensions…** offers to turn it back on. The settings item is added on a best-effort basis by matching T3's settings sidebar. If a T3 update changes that sidebar, the menu keeps working.

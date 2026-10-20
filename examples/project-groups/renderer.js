@@ -38,6 +38,7 @@ if (!window.t3ProjectGroups) {
     "folder": [["path",{"d":"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"}]],
     "plus": [["path",{"d":"M5 12h14"}],["path",{"d":"M12 5v14"}]],
     "pencil": [["path",{"d":"M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"}],["path",{"d":"m15 5 4 4"}]],
+    "settings": [["path",{"d":"M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"}],["circle",{"cx":"12","cy":"12","r":"3"}]],
     "check": [["path",{"d":"M20 6 9 17l-5-5"}]],
     "search": [["path",{"d":"m21 21-4.34-4.34"}],["circle",{"cx":"11","cy":"11","r":"8"}]],
   };
@@ -125,6 +126,23 @@ if (!window.t3ProjectGroups) {
       refs: project.memberProjectRefs.map((ref) => `${ref.environmentId}:${ref.projectId}`),
     }));
     return { trigger, combobox, projects };
+  }
+
+  // T3's router, from the route match components above the sidebar. Null when it is missing.
+  function routerOf() {
+    for (const fiber of ancestors(fiberOf(document.querySelector(TRIGGER)), Infinity)) {
+      const router = fiber.memoizedProps?.router;
+      if (typeof router?.navigate === "function") return router;
+    }
+    return null;
+  }
+
+  // What the gear and a right-click on a project do in T3's own menu.
+  function openProjectSettings(project) {
+    const router = routerOf();
+    if (!router) return console.warn(LOG, "could not find T3's router; cannot open project settings");
+    closePopover(false);
+    router.navigate({ to: "/projects/$projectKey", params: { projectKey: project.key } });
   }
 
   // The project of a sidebar row: a thread, a search result or a draft.
@@ -365,10 +383,10 @@ if (!window.t3ProjectGroups) {
     popover.element.style.maxHeight = `${Math.max(160, innerHeight - anchor.bottom - 22)}px`;
   }
 
-  function item({ key, role, checked, icon, label, detail, onclick, extra }) {
+  function item({ key, role, checked, icon, label, detail, onclick, oncontextmenu, extra }) {
     return h(
       "div",
-      { className: "t3pg-item", role, tabindex: "-1", "data-key": key, "aria-checked": role === "menuitem" ? null : String(checked), onclick },
+      { className: "t3pg-item", role, tabindex: "-1", "data-key": key, "aria-checked": role === "menuitem" ? null : String(checked), onclick, oncontextmenu },
       role === "menuitemcheckbox" ? h("span", { className: "t3pg-check", "aria-hidden": "true" }, checked === true ? lucide("check") : null) : null,
       icon,
       h("span", { className: "t3pg-label" }, label),
@@ -438,6 +456,25 @@ if (!window.t3ProjectGroups) {
             icon: projectIcon(project),
             label: project.name,
             onclick: () => toggle(project, inside === project.refs.length),
+            oncontextmenu: (event) => {
+              event.preventDefault();
+              openProjectSettings(project);
+            },
+            extra: h(
+              "button",
+              {
+                type: "button",
+                className: "t3pg-edit",
+                tabindex: "-1",
+                title: `Project settings for ${project.name}`,
+                "aria-label": `Project settings for ${project.name}`,
+                onclick: (event) => {
+                  event.stopPropagation();
+                  openProjectSettings(project);
+                },
+              },
+              lucide("settings"),
+            ),
           }),
         );
       }

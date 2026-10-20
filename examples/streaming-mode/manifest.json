@@ -1,0 +1,5 @@
+{
+  "name": "Streaming Mode",
+  "version": "0.1.0",
+  "description": "An eye button next to the project filter blurs the names of projects whose GitHub repository is not public."
+}
