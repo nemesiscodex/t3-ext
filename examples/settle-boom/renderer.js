@@ -46,12 +46,14 @@ if (!window.t3SettleBoom) {
   // row that is leaving ("ghost"), on the live row ("row"), or on the row once it has moved into
   // Active ("arrival"). `rank` decides which of several changes on one thread within a second
   // plays; snooze stands alone. `dedupe` is how long a change reported by several sources (the
-  // command, the server's push, the sidebar) counts as the same one.
+  // command, the server's push, the sidebar) counts as the same one. `keep` is how long a ghost
+  // keeps the row's place in the sidebar once T3 has moved it.
   const EFFECTS = {
     settle: {
       placement: "ghost",
       rank: 4,
       dedupe: HOLD_MS + PLAYED_MS,
+      keep: (calm) => (calm ? CALM_HOLD_MS : HOLD_MS),
       duration: 1800,
       label: () => ({ word: "SETTLED", square: "--success", at: "burst", from: 120 }),
       setup: settleSetup,
@@ -99,6 +101,8 @@ if (!window.t3SettleBoom) {
       placement: "ghost",
       rank: null,
       dedupe: PLAYED_MS,
+      // Until the CRT line has shrunk to a dot, or the calm fade is over.
+      keep: (calm) => (calm ? 680 : 800),
       duration: 1800,
       label: ({ until }) => ({ word: "SNOOZED", square: "--muted-foreground", note: untilText(until) }),
       draw: drawSnooze,
@@ -124,9 +128,10 @@ if (!window.t3SettleBoom) {
 
   // --- Which thread, and where ----------------------------------------------------------------
 
-  // A row's data-thread-item is "<environmentId>:<threadId>". Settled threads keep theirs in the
-  // Settled section further down, so the active row is the first match.
-  const threadIdOf = (row) => row.getAttribute("data-thread-item").split(":").pop();
+  // A row's data-thread-item is "<environmentId>:<threadId>", and a thread id can hold colons
+  // itself ("mcp:<uuid>"). Settled threads keep theirs in the Settled section further down, so
+  // the active row is the first match.
+  const threadIdOf = (row) => row.getAttribute("data-thread-item").replace(/^[^:]*:/, "");
   const rowsFor = (threadId) => [...document.querySelectorAll(ROW)].filter((row) => threadIdOf(row) === threadId);
   const rowFor = (threadId) => rowsFor(threadId)[0];
 
@@ -151,6 +156,7 @@ if (!window.t3SettleBoom) {
       for (const name of ["id", "data-testid", "data-thread-item"]) node.removeAttribute(name);
     }
     copy.inert = true;
+    const list = row.parentElement;
     return {
       threadId,
       x: rect.left + rect.width / 2,
@@ -158,6 +164,7 @@ if (!window.t3SettleBoom) {
       rect,
       title: title ?? row.innerText.split("\n")[0],
       row: { element: row, copy, rect, background: backgroundOf(row) },
+      layout: { list, tops: new Map([...list.children].map((item) => [item, item.offsetTop])) },
     };
   }
 
@@ -244,7 +251,13 @@ if (!window.t3SettleBoom) {
     }
     played.set(key, now);
     if (effect.rank !== null) latest.set(threadId, { rank: effect.rank, at: now });
-    if (effect.placement === "ghost") return begin(event, target(threadId, details.title), details);
+    if (effect.placement === "ghost") {
+      const spot = target(threadId, details.title);
+      const scene = begin(event, spot, details);
+      // A held Settle press moves the row only after its effect, so it has no place to keep.
+      if (spot.layout && !details.held) keepPlace(scene, spot.layout, effect.keep(scene.calm));
+      return scene;
+    }
     arrive(threadId, effect.placement === "arrival", (spot) => begin(event, spot, details));
     return null;
   }
@@ -344,6 +357,49 @@ if (!window.t3SettleBoom) {
       canvas.remove();
       canvas = null;
     }
+  }
+
+  // --- Keeping a leaving row's place -----------------------------------------------------------
+
+  // T3's sidebar is one list of rows and section headers. When a row leaves, T3 slides the items
+  // below up into its place within 150 ms, under the ghost that is still playing there. So once
+  // T3 has moved the list, every moved item is held where it was, and the leaving row and new
+  // items stay hidden, until the ghost lets go; then they slide into place. T3 starts its slide
+  // in a layout effect, and a mutation observer runs after that, so these animations win.
+  const leaving = new Set();
+
+  function keepPlace(scene, { list, tops }, keep) {
+    const { threadId, element: row } = scene;
+    leaving.add(threadId);
+    const stop = () => {
+      observer.disconnect();
+      clearTimeout(timer);
+      leaving.delete(threadId);
+    };
+    const observer = new MutationObserver(
+      guard(() => {
+        const items = [...list.children];
+        // Wait for the move itself, not, say, T3 removing an earlier exit clone.
+        const moved = row.parentElement !== list || items.some((item) => tops.has(item) && tops.get(item) !== item.offsetTop);
+        if (!moved) return;
+        observer.disconnect();
+        const wait = scene.start + keep - performance.now();
+        if (wait <= 0) return stop();
+        const slide = scene.calm ? 0 : 220;
+        for (const item of items) {
+          const was = tops.get(item);
+          const hide = was === undefined || (item.matches(ROW) && leaving.has(threadIdOf(item)));
+          const shift = was === undefined ? 0 : was - item.offsetTop;
+          if (!hide && !shift) continue;
+          const held = { transform: `translateY(${shift}px)`, opacity: hide ? 0 : 1 };
+          item.animate([held, { ...held, offset: wait / (wait + slide), easing: "cubic-bezier(0.22, 1, 0.36, 1)" }, { transform: "none", opacity: 1 }], {
+            duration: wait + slide,
+          });
+        }
+      }),
+    );
+    const timer = setTimeout(stop, keep);
+    observer.observe(list, { childList: true });
   }
 
   // --- Holding the settle until the explosion is over ------------------------------------------
