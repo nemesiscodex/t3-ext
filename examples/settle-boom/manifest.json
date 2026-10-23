@@ -1,5 +1,5 @@
 {
   "name": "Settle Boom",
-  "version": "0.1.0",
-  "description": "A small explosion and a synthesized boom when a thread settles. Styled after Kit Langton's Effect Institute."
+  "version": "0.2.0",
+  "description": "Small effects and synthesized sounds when a thread starts work, needs you, finishes, snoozes, wakes or settles. Styled after Kit Langton's Effect Institute."
 }

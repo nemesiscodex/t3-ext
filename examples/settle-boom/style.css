@@ -44,14 +44,16 @@
   white-space: pre;
 }
 
+/* Each effect sets the square to one of T3's status colors. */
 .t3-settle-boom-word::before {
   content: "■";
   margin-right: 0.7em;
-  color: var(--success, rgb(16, 185, 129));
+  color: var(--t3-settle-boom-square, var(--success, rgb(16, 185, 129)));
   letter-spacing: 0;
 }
 
-.t3-settle-boom-title:empty {
+.t3-settle-boom-title:empty,
+.t3-settle-boom-note:empty {
   display: none;
 }
 
@@ -62,4 +64,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted-foreground);
+}
+
+.t3-settle-boom-note {
+  margin-top: 1px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
 }

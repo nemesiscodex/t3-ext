@@ -19,7 +19,7 @@ The [`examples`](examples) folder has four extensions you can try in a minute:
 | --- | --- |
 | [Project Groups](examples/project-groups) | Filter the sidebar by several projects at once, and save them as named groups with an icon. |
 | [Streaming Mode](examples/streaming-mode) | An eye button that blurs the names of your private projects while you stream or share your screen. |
-| [Settle Boom](examples/settle-boom) | A small explosion and a synthesized boom when you settle a thread. |
+| [Settle Boom](examples/settle-boom) | A small effect and a synthesized sound when a thread starts work, needs you, finishes, snoozes or wakes, and an explosion when you settle it. |
 | [Thread Doom](examples/thread-doom) | Play Doom over a thread while its agent works. The game pauses when the agent needs you or finishes. |
 
 <table><tr>
