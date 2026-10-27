@@ -162,6 +162,27 @@ async function main() {
     await assert.rejects(page.evaluate(`window.t3ext.remove("builtin:extension-manager")`), /built in and cannot be removed/);
     step("removing the builtin manager is refused");
 
+    assert.equal(await page.evaluate("window.__t3extSample.id"), "sample");
+    step("sample renderer.js got its folder name as extensionId");
+    const config = await page.evaluate(`(async () => {
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
+      const heard = [];
+      const stop = window.t3ext.onConfigChange((id, value) => heard.push([id, value]));
+      const before = await window.t3ext.getConfig("sample");
+      const saved = await window.t3ext.setConfig("sample", { picked: ["a"], skip: undefined });
+      await settle();
+      stop();
+      await window.t3ext.setConfig("sample", { picked: ["b"] });
+      await settle();
+      const after = await window.t3ext.getConfig("sample");
+      const file = await window.t3ext.setConfig("sample", null);
+      return { before, saved, heard, after, file };
+    })()`);
+    assert.deepEqual(config, { before: null, saved: { picked: ["a"] }, heard: [["sample", { picked: ["a"] }]], after: { picked: ["b"] }, file: null });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"), "utf8")).config, {}, "null deleted the entry on disk");
+    await assert.rejects(page.evaluate(`window.t3ext.setConfig("nope", 1)`), /No extension with id "nope"/);
+    step("config round-trips through the real preload; onConfigChange hears the change, then stops; unknown ids are refused");
+
     const exe = path.join(app, "Contents", "MacOS", path.basename(app, ".app"));
     const again = execFileSync(exe, [CLI, "launch", "--app", app], { encoding: "utf8", env: { ...openEnv, ELECTRON_RUN_AS_NODE: "1", HOME: fakeHome } });
     assert.match(again, new RegExp(`is already running \\(pid ${pid}\\) with the extension host; brought it to the front`));
@@ -291,7 +312,7 @@ async function main() {
     await page.evaluate(`document.querySelector("[data-t3ext-manager] .t3ext-close").click()`);
 
     await page.evaluate(`window.t3ext.setEnabled("sample", false)`);
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"), "utf8")), { disabled: ["sample"] });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"), "utf8")), { disabled: ["sample"], config: {} });
     step("setEnabled('sample', false) persisted to extensions.json");
     await page.evaluate("location.reload()");
     await sleep(1000);
