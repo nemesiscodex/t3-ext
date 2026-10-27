@@ -2,6 +2,7 @@ if (!window.t3StreamingMode) {
   const STORAGE_KEY = "t3ext.streaming-mode";
   const LOG = "[streaming-mode]";
   const TRIGGER = 'button[data-slot="combobox-trigger"][aria-label^="Filter threads by project"]';
+  const THREAD_ROW = "[data-thread-item]";
   const MARK = "data-t3sm-blur";
   const SVG_NS = "http://www.w3.org/2000/svg";
   const GITHUB = "github.com/";
@@ -27,22 +28,29 @@ if (!window.t3StreamingMode) {
   // repos:   "github.com/owner/name" -> { public, checkedAt }, what GitHub said without a login.
   // secrets: every name and path of a project not known to be public, from the last time T3's
   //          project list was readable, so names stay blurred while the sidebar is collapsed.
+  // threads: "<environmentId>:<threadId>" -> [title, branch] of each thread seen in the sidebar
+  //          whose project is not known to be public, so its title stays blurred in the chat
+  //          header after its row leaves the sidebar.
   function load() {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-      if (saved?.version === 1) return { version: 1, on: saved.on === true, repos: saved.repos ?? {}, secrets: Array.isArray(saved.secrets) ? saved.secrets : [] };
+      if (saved?.version === 1) {
+        const threads = saved.threads && typeof saved.threads === "object" ? saved.threads : {};
+        return { version: 1, on: saved.on === true, repos: saved.repos ?? {}, secrets: Array.isArray(saved.secrets) ? saved.secrets : [], threads };
+      }
     } catch {}
-    return { version: 1, on: false, repos: {}, secrets: [] };
+    return { version: 1, on: false, repos: {}, secrets: [], threads: {} };
   }
 
   let state = load();
   let secrets;
   let longest;
-  function setSecrets(list) {
+  function setSecrets() {
+    const list = [...state.secrets, ...Object.values(state.threads).flat()];
     secrets = new Set(list);
     longest = Math.max(0, ...list.map((text) => text.length));
   }
-  setSecrets(state.secrets);
+  setSecrets();
   const save = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 
   // --- Reading T3 -------------------------------------------------------------------------------
@@ -91,6 +99,32 @@ if (!window.t3StreamingMode) {
       }
     }
     return [...found].filter((text) => typeof text === "string" && text.trim() && text !== PLACEHOLDER).map((text) => text.trim()).sort();
+  }
+
+  // The thread and project each sidebar row renders from, null when T3 renamed what this reads.
+  function readThreadRows() {
+    const rows = [...document.querySelectorAll(THREAD_ROW)];
+    const read = rows.flatMap((row) => {
+      for (let fiber = fiberOf(row), i = 0; fiber && i < 4; fiber = fiber.return, i++) {
+        const props = fiber.memoizedProps;
+        if (props?.thread?.id && "project" in props) return [props];
+      }
+      return [];
+    });
+    return rows.length && !read.length ? null : read;
+  }
+
+  // The saved threads, updated with the rows on screen: a thread is dropped once its project is
+  // known to be public, and a renamed thread's old title is replaced.
+  function threadSecretsOf(rows) {
+    const threads = { ...state.threads };
+    for (const { thread, project } of rows) {
+      const key = `${thread.environmentId}:${thread.id}`;
+      const texts = [thread.title, thread.branch].filter((text) => typeof text === "string" && text.trim()).map((text) => text.trim());
+      if (isPublic(project ? repoOf(project) : null) || !texts.length) delete threads[key];
+      else threads[key] = texts;
+    }
+    return threads;
   }
 
   // --- Asking GitHub ----------------------------------------------------------------------------
@@ -241,24 +275,26 @@ if (!window.t3StreamingMode) {
 
   // --- Keeping it applied -----------------------------------------------------------------------
 
-  let warned = false;
+  const warned = new Set();
+  function warnOnce(message) {
+    if (!warned.has(message)) console.warn(LOG, message);
+    warned.add(message);
+  }
 
   function sync() {
     const trigger = document.querySelector(TRIGGER);
     if (!trigger) return;
     placeButton(trigger);
     const catalog = readCatalog(trigger);
-    if (!catalog) {
-      if (!warned) console.warn(LOG, "could not read T3's project list; blurring the names it last saw");
-      warned = true;
-      return;
-    }
+    if (!catalog) return warnOnce("could not read T3's project list; blurring the names it last saw");
     projectRepos = catalog.projectGroups.flatMap((group) => group.memberProjects.map(repoOf)).filter(Boolean);
     checkStale(projectRepos, RECHECK_MS);
-    const next = secretsOf(catalog);
-    if (next.join("\n") === state.secrets.join("\n")) return;
-    state = { ...state, secrets: next };
-    setSecrets(next);
+    const rows = readThreadRows();
+    if (!rows) warnOnce("could not read T3's thread rows; blurring the thread titles it last saw");
+    const next = { secrets: secretsOf(catalog), threads: rows ? threadSecretsOf(rows) : state.threads };
+    if (JSON.stringify(next) === JSON.stringify({ secrets: state.secrets, threads: state.threads })) return;
+    state = { ...state, ...next };
+    setSecrets();
     save();
     rescan();
   }
@@ -290,7 +326,7 @@ if (!window.t3StreamingMode) {
   addEventListener("storage", (event) => {
     if (event.key !== STORAGE_KEY) return;
     state = load();
-    setSecrets(state.secrets);
+    setSecrets();
     paintButton();
     rescan();
   });
