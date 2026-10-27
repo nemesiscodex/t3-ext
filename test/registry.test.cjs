@@ -54,7 +54,7 @@ test("setEnabled persists to extensions.json", (t) => {
   const { registry, home } = setup(t);
   registry.setEnabled("alpha", false);
   registry.setEnabled("builtin:extension-manager", false);
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"))), { disabled: ["alpha", "builtin:extension-manager"] });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"))), { disabled: ["alpha", "builtin:extension-manager"], config: {} });
   assert.equal(createRegistry({ home, builtinDir: BUILTIN_DIR }).get("alpha").enabled, false, "state read back by a new registry");
   registry.setEnabled("alpha", true);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"))).disabled, ["builtin:extension-manager"]);
@@ -90,6 +90,45 @@ test("forget clears disabled state and runtime errors", (t) => {
   registry.forget("alpha");
   assert.equal(registry.get("alpha").error, null);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"))).disabled, []);
+});
+
+test("config persists per extension as JSON, and setEnabled keeps it", (t) => {
+  const { registry, home } = setup(t);
+  const stateFile = path.join(home, "extensions.json");
+  assert.equal(registry.getConfig("alpha"), null, "nothing stored yet");
+  const value = { profiles: [{ id: "a", at: new Date(0) }], skip: undefined, fn() {} };
+  assert.deepEqual(registry.setConfig("alpha", value), { profiles: [{ id: "a", at: "1970-01-01T00:00:00.000Z" }] }, "returns the JSON round trip");
+  registry.setConfig("linked", 3);
+  registry.setEnabled("alpha", false);
+  const reread = createRegistry({ home, builtinDir: BUILTIN_DIR });
+  assert.deepEqual(reread.getConfig("alpha"), { profiles: [{ id: "a", at: "1970-01-01T00:00:00.000Z" }] }, "survives setEnabled and a new registry");
+  assert.equal(reread.getConfig("linked"), 3);
+  assert.deepEqual(JSON.parse(fs.readFileSync(stateFile)).disabled, ["alpha"]);
+  assert.equal(registry.setConfig("linked", null), null);
+  assert.equal(registry.setConfig("alpha", undefined), null);
+  assert.deepEqual(JSON.parse(fs.readFileSync(stateFile)).config, {}, "null and undefined delete the entry");
+  assert.throws(() => registry.setConfig("nope", {}), /No extension with id "nope"/);
+  assert.equal(registry.getConfig("nope"), null);
+});
+
+test("forget drops the extension's config and leaves the others", (t) => {
+  const { registry, home } = setup(t);
+  registry.setConfig("alpha", { a: 1 });
+  registry.setConfig("linked", { b: 2 });
+  registry.forget("alpha");
+  assert.equal(registry.getConfig("alpha"), null);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"))).config, { linked: { b: 2 } });
+});
+
+test("a state file that is not JSON, or has a config that is not an object, reads as no config", (t) => {
+  const { registry, home } = setup(t);
+  const stateFile = path.join(home, "extensions.json");
+  for (const raw of ["{ not json", '{"disabled":["alpha"],"config":[1,2]}', '{"config":"x"}', '{"config":null}', "null", "[]"]) {
+    fs.writeFileSync(stateFile, raw);
+    assert.equal(registry.getConfig("alpha"), null, raw);
+    registry.setConfig("linked", { ok: true });
+    assert.deepEqual(JSON.parse(fs.readFileSync(stateFile)).config, { linked: { ok: true } }, raw);
+  }
 });
 
 test("a part counts only when it is a regular file, following symlinks; anything else is an error", (t) => {

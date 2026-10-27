@@ -86,9 +86,10 @@ const PAGE_PARTS = [
   {
     part: "renderer",
     file: "renderer.js",
+    // `extensionId` is the folder name, which the user picks when they link the extension in.
     inject: (contents, id, code) =>
       contents.executeJavaScript(
-        `(() => { try {\n${code}\n} catch (error) { console.error("[t3ext]", ${JSON.stringify(id)}, error); } })();\n//# sourceURL=t3ext/${id.replace(":", "/")}/renderer.js`,
+        `((extensionId) => { try {\n${code}\n} catch (error) { console.error("[t3ext]", extensionId, error); } })(${JSON.stringify(id)});\n//# sourceURL=t3ext/${id.replace(":", "/")}/renderer.js`,
       ),
   },
 ];
@@ -125,6 +126,14 @@ function registerIpc(registry) {
 
   handle("t3ext:list", () => registry.list());
   handle("t3ext:setEnabled", (_event, id, enabled) => registry.setEnabled(String(id), Boolean(enabled)));
+  handle("t3ext:getConfig", (_event, id) => registry.getConfig(String(id)));
+  handle("t3ext:setConfig", (_event, id, value) => {
+    const stored = registry.setConfig(String(id), value);
+    for (const contents of webContents.getAllWebContents()) {
+      if (!contents.isDestroyed() && isAppUrl(contents.getURL())) contents.send("t3ext:config", String(id), stored);
+    }
+    return stored;
+  });
   handle("t3ext:remove", async (_event, id) => {
     const extension = registry.get(String(id));
     if (extension.builtin) throw new Error(`${extension.id} is built in and cannot be removed. Disable it instead.`);

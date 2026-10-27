@@ -1,6 +1,6 @@
 "use strict";
 
-// Owns the extension list and the enabled/disabled state. Pure Node; no Electron.
+// Owns the extension list, the enabled/disabled state and each extension's config. Pure Node; no Electron.
 
 const fs = require("node:fs");
 const os = require("node:os");
@@ -47,14 +47,15 @@ function readManifest(dir) {
   return parseManifest(raw);
 }
 
+const isPlainObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+
 function parseState(raw) {
+  let value = null;
   try {
-    const value = JSON.parse(raw);
-    const disabled = Array.isArray(value?.disabled) ? value.disabled.filter((id) => typeof id === "string") : [];
-    return { disabled: [...new Set(disabled)] };
-  } catch {
-    return { disabled: [] };
-  }
+    value = JSON.parse(raw);
+  } catch {}
+  const disabled = Array.isArray(value?.disabled) ? value.disabled.filter((id) => typeof id === "string") : [];
+  return { disabled: [...new Set(disabled)], config: isPlainObject(value?.config) ? value.config : {} };
 }
 
 function createRegistry({ home = t3Home(), builtinDir }) {
@@ -63,11 +64,11 @@ function createRegistry({ home = t3Home(), builtinDir }) {
   const runtimeErrors = new Map();
 
   function readState() {
+    let raw = "";
     try {
-      return parseState(fs.readFileSync(stateFile, "utf8"));
-    } catch {
-      return { disabled: [] };
-    }
+      raw = fs.readFileSync(stateFile, "utf8");
+    } catch {}
+    return parseState(raw);
   }
 
   function writeState(state) {
@@ -129,17 +130,37 @@ function createRegistry({ home = t3Home(), builtinDir }) {
 
   function setEnabled(id, enabled) {
     get(id);
-    const disabled = readState().disabled.filter((other) => other !== id);
+    const state = readState();
+    const disabled = state.disabled.filter((other) => other !== id);
     if (!enabled) disabled.push(id);
-    writeState({ disabled });
+    writeState({ ...state, disabled });
     return get(id);
+  }
+
+  function getConfig(id) {
+    return readState().config[id] ?? null;
+  }
+
+  // Stores what JSON keeps of `value`, so every window reads back the same thing. null removes it.
+  function setConfig(id, value) {
+    get(id);
+    const json = JSON.stringify(value);
+    const stored = json === undefined ? null : JSON.parse(json);
+    const state = readState();
+    const config = { ...state.config };
+    if (stored === null) delete config[id];
+    else config[id] = stored;
+    writeState({ ...state, config });
+    return stored;
   }
 
   // The caller removes the folder (Electron moves it to the Trash); this drops its state.
   function forget(id) {
     runtimeErrors.delete(id);
     const state = readState();
-    if (state.disabled.includes(id)) writeState({ disabled: state.disabled.filter((other) => other !== id) });
+    if (!state.disabled.includes(id) && !Object.hasOwn(state.config, id)) return;
+    const { [id]: _forgotten, ...config } = state.config;
+    writeState({ disabled: state.disabled.filter((other) => other !== id), config });
   }
 
   function add(sourceDir) {
@@ -162,7 +183,7 @@ function createRegistry({ home = t3Home(), builtinDir }) {
     runtimeErrors.set(id, errors);
   }
 
-  return { extensionsDir, stateFile, list, get, setEnabled, forget, add, recordError };
+  return { extensionsDir, stateFile, list, get, setEnabled, getConfig, setConfig, forget, add, recordError };
 }
 
 function listDirs(dir) {

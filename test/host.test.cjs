@@ -10,6 +10,7 @@ const Module = require("node:module");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
+const vm = require("node:vm");
 const { hostAnswers } = require("../host/presence.cjs");
 
 const HOST = require.resolve("../host/index.cjs");
@@ -31,7 +32,10 @@ function fakeContents(url) {
   Object.assign(contents, {
     reloads: 0,
     injected: [],
+    sent: [],
     getURL: () => url,
+    isDestroyed: () => false,
+    send: (...message) => contents.sent.push(message),
     reload: () => contents.reloads++,
     insertCSS: async (css) => contents.injected.push(["css", css]),
     executeJavaScript: async (code) => contents.injected.push(["js", code]),
@@ -125,6 +129,42 @@ test("late start reloads only T3 windows, re-sets the menu with Extensions, and 
   assert.ok(injected.includes("css:true") && injected.includes("js:true"), JSON.stringify(injected));
   assert.deepEqual(webPage.injected, [], "nothing is injected into web pages");
   assert.equal(JSON.parse(fs.readFileSync(path.join(home, "sample-main-ran.json"), "utf8")).pid, process.pid, "main.js ran");
+});
+
+test("each renderer.js runs with its own folder name as extensionId", async (t) => {
+  const appWindow = fakeContents("t3code://app/index.html");
+  const { electron } = fakeElectron({ ready: true, contents: [appWindow] });
+  const { host } = loadHost(t, electron);
+  host.start();
+  appWindow.emit("dom-ready");
+  await new Promise((resolve) => setImmediate(resolve));
+  const [, code] = appWindow.injected.find(([kind, code]) => kind === "js" && code.includes("__t3extSample"));
+  const window = {};
+  vm.runInNewContext(code, { window, console, Date });
+  assert.equal(window.__t3extSample.id, "sample");
+});
+
+test("setConfig stores the value and sends it to every T3 window, and nowhere else", async (t) => {
+  const appWindows = [fakeContents("t3code://app/index.html"), fakeContents("t3code://app/settings")];
+  const webPage = fakeContents("https://example.com/");
+  const { electron, state } = fakeElectron({ ready: true, contents: [...appWindows, webPage] });
+  const { host, home } = loadHost(t, electron);
+  host.start();
+  const fromApp = { senderFrame: { url: "t3code://app/index.html" }, sender: appWindows[0] };
+  const setConfig = state.handlers.get("t3ext:setConfig");
+  const getConfig = state.handlers.get("t3ext:getConfig");
+
+  assert.equal(await getConfig(fromApp, "sample"), null);
+  assert.deepEqual(await setConfig(fromApp, "sample", { on: true, skip: undefined }), { on: true });
+  const message = ["t3ext:config", "sample", { on: true }];
+  assert.deepEqual(appWindows.map((contents) => contents.sent), [[message], [message]], "the sender and the other T3 window");
+  assert.deepEqual(webPage.sent, [], "a web page in the preview browser hears nothing");
+  assert.deepEqual(await getConfig(fromApp, "sample"), { on: true });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"), "utf8")).config, { sample: { on: true } });
+
+  assert.throws(() => setConfig({ senderFrame: { url: "https://example.com/" } }, "sample", 1), /only available to T3 Code windows/);
+  assert.throws(() => setConfig(fromApp, "nope", 1), /No extension with id "nope"/);
+  assert.equal(appWindows[0].sent.length, 1, "a refused call sends nothing");
 });
 
 test("a second start changes nothing: no reload, no second IPC handler, no second menu", (t) => {
