@@ -28,3 +28,270 @@
     animation: none;
   }
 }
+
+/* The eye's menu. T3's dropdown-glass gives it T3's menu surface; :where() keeps this fallback
+   below it, for a T3 that renames that class. */
+:where(.t3sm-menu) {
+  background: var(--popover);
+  border: 1px solid var(--border);
+}
+
+.t3sm-menu {
+  position: fixed;
+  z-index: 140;
+  min-width: 220px;
+  max-width: 300px;
+  padding: 4px;
+  border-radius: 10px;
+  color: var(--popover-foreground);
+  font-size: 14px;
+  box-shadow: 0 16px 40px -18px rgb(0 0 0 / 55%);
+}
+
+.dark .t3sm-menu {
+  box-shadow: 0 18px 44px -18px rgb(0 0 0 / 80%);
+}
+
+.t3sm-menu-label {
+  padding: 6px 8px 4px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.t3sm-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  outline: none;
+  user-select: none;
+}
+
+.t3sm-item:focus {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.t3sm-item[aria-disabled="true"] {
+  cursor: default;
+}
+
+.t3sm-item[aria-disabled="true"] .t3sm-item-label {
+  opacity: 0.6;
+}
+
+.t3sm-item-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.t3sm-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 20px;
+}
+
+.t3sm-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.t3sm-item-detail {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.t3sm-separator {
+  height: 1px;
+  margin: 4px -4px;
+  background: var(--border);
+}
+
+/* The settings panel, shown inside the extension manager. Its buttons and switch use the
+   manager's t3ext-button and t3ext-switch classes. */
+.t3sm-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.t3sm-heading {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.t3sm-hint {
+  margin: 0 0 10px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+
+.t3sm-profiles,
+.t3sm-projects {
+  margin: 0 0 10px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius, 0.5rem);
+  list-style: none;
+}
+
+.t3sm-profile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 6px;
+  border-radius: 6px;
+}
+
+.t3sm-profile[data-editing] {
+  background: color-mix(in srgb, var(--foreground) 7%, transparent);
+}
+
+.t3sm-profile-pick {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.t3sm-profile-name {
+  font-weight: 500;
+}
+
+.t3sm-profile-summary,
+.t3sm-project-detail {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.t3sm-badge,
+.t3sm-tag {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.t3sm-badge {
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  color: var(--primary);
+  font-weight: 500;
+}
+
+.t3sm-tag {
+  border: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.t3sm-name-row {
+  display: flex;
+  gap: 8px;
+}
+
+.t3sm-input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--input, var(--border));
+  border-radius: var(--control-radius, 0.5rem);
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 13px;
+}
+
+.t3sm-input::placeholder {
+  color: var(--placeholder, var(--muted-foreground));
+}
+
+.t3sm-filter {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.t3sm-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 24px;
+}
+
+.t3sm-option-label {
+  cursor: pointer;
+}
+
+.t3sm-project {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.t3sm-project:hover,
+.t3sm-profile-pick:hover {
+  background: var(--accent);
+}
+
+.t3sm-project input {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--primary);
+}
+
+.t3sm-project-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.t3sm-project-label,
+.t3sm-project-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.t3sm-projects .t3sm-hint {
+  margin: 0;
+  padding: 6px 8px;
+}
+
+/* You opened the panel on purpose: a blurred name shows while you point at or focus its row. */
+.t3sm-project:is(:hover, :focus-within) [data-t3sm-blur] {
+  filter: none;
+}
+
+.t3sm-input:focus-visible,
+.t3sm-profile-pick:focus-visible,
+.t3sm-project input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}

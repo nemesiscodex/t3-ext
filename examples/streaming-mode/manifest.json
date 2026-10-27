@@ -1,5 +1,5 @@
 {
   "name": "Streaming Mode",
-  "version": "0.1.0",
-  "description": "An eye button next to the project filter blurs the names of projects whose GitHub repository is not public, and the titles and branches of their threads."
+  "version": "0.2.0",
+  "description": "An eye button next to the project filter blurs project names and their threads' titles and branches. Profiles pick what stays readable: public GitHub repositories, projects you choose, or both."
 }
