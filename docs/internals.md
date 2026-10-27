@@ -52,12 +52,13 @@ Both routes need the `EnableNodeCliInspectArguments` [Electron fuse](https://www
 `host/index.cjs` runs in T3's main process and uses ordinary Electron APIs:
 
 - registers `host/preload.cjs` on the default session, which exposes `window.t3ext` to `t3code://` pages;
-- inserts each enabled extension's `style.css` with `webContents.insertCSS` and runs its `renderer.js` with `executeJavaScript`, in every T3 window, each time its page reaches `dom-ready`;
+- inserts each enabled extension's `style.css` with `webContents.insertCSS` and runs its `renderer.js` with `executeJavaScript`, in every T3 window, each time its page reaches `dom-ready`. Each `renderer.js` runs inside a function whose `extensionId` argument is its folder name;
 - wraps `Menu.setApplicationMenu` so every menu T3 sets gets an **Extensions** menu;
-- answers the `t3ext:*` IPC calls behind `window.t3ext`;
+- answers the `t3ext:*` IPC calls behind `window.t3ext`, and refuses them from any page that is not `t3code://`;
+- after a `t3ext:setConfig`, sends `t3ext:config` with the id and the saved value to every `t3code://` page, the sender included. The preload passes it on to `onConfigChange` listeners without the IPC event;
 - `require`s each enabled extension's `main.js`.
 
-`host/registry.cjs` reads the extension folders and `~/.t3/extensions.json`. The built-in extension manager in `host/builtin/extension-manager` is an ordinary extension that uses `window.t3ext`.
+`host/registry.cjs` reads the extension folders and `~/.t3/extensions.json`, which holds `{ "disabled": [ids], "config": { id: value } }`. A file that is missing or not JSON reads as nothing disabled and no config. Every write keeps both keys, and removing an extension drops its id from both. The built-in extension manager in `host/builtin/extension-manager` is an ordinary extension that uses `window.t3ext`. Settings panels register in the page's `window.t3extSettings` map, not on `window.t3ext`, because the context bridge freezes that object.
 
 ## The launcher app
 
@@ -85,7 +86,7 @@ The tests check the plist and run the agent's command by hand. A real launchd tr
 | `src/agent.cjs` | Writes, loads and removes the LaunchAgent |
 | `src/pick-node.cjs` | Chooses T3's binary or your `node` to run the launcher |
 | `host/index.cjs` | The extension host that runs inside T3 |
-| `host/registry.cjs` | Extension folders and enabled state |
+| `host/registry.cjs` | Extension folders, enabled state and config |
 | `host/presence.cjs` | The per-pid socket that tells the launcher the host is loaded |
 | `host/preload.cjs` | Exposes `window.t3ext` |
 

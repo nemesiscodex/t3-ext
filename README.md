@@ -18,7 +18,7 @@ The [`examples`](examples) folder has four extensions you can try in a minute:
 | Extension | What it does |
 | --- | --- |
 | [Project Groups](examples/project-groups) | Filter the sidebar by several projects at once, and save them as named groups with an icon. |
-| [Streaming Mode](examples/streaming-mode) | An eye button that blurs the names of your private projects, and their thread titles, while you stream or share your screen. |
+| [Streaming Mode](examples/streaming-mode) | An eye button that blurs the names of your private projects, and their thread titles, while you stream or share your screen. Profiles choose which projects stay readable. |
 | [Settle Boom](examples/settle-boom) | A small effect and a synthesized sound when a thread starts work, needs you, finishes, snoozes or wakes, and an explosion when you settle it. |
 | [Thread Doom](examples/thread-doom) | Play Doom over a thread while its agent works. The game pauses when the agent needs you or finishes. |
 
@@ -161,9 +161,29 @@ await window.t3ext.setEnabled("my-ext", false);
 await window.t3ext.remove("my-ext");          // moves the folder to the Trash
 await window.t3ext.add();                     // asks for a folder, then copies it in
 await window.t3ext.openFolder("my-ext");      // or openFolder() for the extensions folder
+await window.t3ext.getConfig("my-ext");       // the extension's saved config, or null
+await window.t3ext.setConfig("my-ext", { theme: "dark" }); // saves it, resolves with what was saved
+const stop = window.t3ext.onConfigChange((id, value) => {}); // after any setConfig, in every window
 ```
 
-Changes to `style.css` and `renderer.js` apply when you reload the window (**Extensions > Reload Window**). Changes to `main.js` apply when you restart T3 Code through T3 Code+. Enabled state lives in `~/.t3/extensions.json` as `{ "disabled": ["id", ...] }`.
+Changes to `style.css` and `renderer.js` apply when you reload the window (**Extensions > Reload Window**). Changes to `main.js` apply when you restart T3 Code through T3 Code+. Enabled state and config live in `~/.t3/extensions.json` as `{ "disabled": ["id", ...], "config": { "id": ... } }`.
+
+**Know your own id.** `renderer.js` runs with a variable `extensionId` that holds its folder name. People link extensions in under any name, so use `extensionId` instead of writing the name in your code.
+
+**Save settings with config.** A config is any JSON value. `setConfig` keeps what JSON keeps (as `JSON.stringify` does), and `null` deletes it. After a `setConfig`, every T3 Code window, the one that saved included, gets `onConfigChange` with the id and the saved value. Filter on your own id. Config survives disabling the extension, and is deleted when you remove it.
+
+**Add a settings panel.** Register a function under your id, and the extension manager shows a **Settings** button on your row while the extension is on:
+
+```js
+(window.t3extSettings ??= new Map()).set(extensionId, (container, { close }) => {
+  container.append(/* your controls */);
+  return () => {}; // optional: runs when the panel closes
+});
+```
+
+The manager calls the function with an empty element inside its dialog, and runs the returned cleanup when the person goes back, presses Escape or closes the manager. `close()` goes back to the extension list. To open your panel from your own UI, dispatch `new CustomEvent("t3ext:manage", { detail: { settings: extensionId } })` on `window`. Panels can use the manager's `t3ext-button` and `t3ext-switch` classes to match it. [Streaming Mode](examples/streaming-mode) has a full panel.
+
+The panel map lives on `window` because `window.t3ext` is frozen. Config and panels need a host from this version on. After you update this checkout, reloaded windows get the new `renderer.js` files, but the host updates when T3 Code restarts through T3 Code+, so check that `window.t3ext.getConfig` exists before you use it.
 
 **Develop with a symlink.** Keep your extension in its own repository and link it in:
 
