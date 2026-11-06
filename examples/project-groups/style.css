@@ -1,15 +1,5 @@
-[data-t3pg-hidden],
 [data-t3pg-replaced] {
   display: none !important;
-}
-
-[data-sidebar="content"] ul[data-t3pg-empty]::before {
-  content: attr(data-t3pg-empty);
-  display: block;
-  padding: 16px 12px;
-  color: var(--muted-foreground);
-  font-size: 13px;
-  text-align: center;
 }
 
 .t3pg-icon {

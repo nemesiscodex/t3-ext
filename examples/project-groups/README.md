@@ -1,6 +1,6 @@
 # Project Groups
 
-T3's sidebar filter picks one project or all of them. This extension lets you pick several, and save a selection as a named group with an icon, such as "Acme" with a rocket for three client repositories. The sidebar then shows only the threads of those projects.
+T3's sidebar filter can hold several projects, but its menu adds them one shift-click at a time and cannot save a set. This extension lets you check several projects at once, and save a selection as a named group with an icon, such as "Acme" with a rocket for three client repositories. The sidebar then shows only the threads of those projects.
 
 ![The project filter with three groups](preview.png)
 
@@ -24,24 +24,13 @@ The groups and the filter are saved in the window's `localStorage` under `t3ext.
 
 ## How it knows
 
-**Projects come from T3's sidebar.** The extension reads two things from the React fiber of T3's filter button (`aria-label` starting with "Filter threads by project"): the button's own props (`items`, `value`, `onValueChange`), and the sidebar's memoized project list (`projectGroups`, with each project's `memberProjectRefs`). A project is saved as `<environmentId>:<projectId>`, so groups keep working if you change T3's project grouping setting.
+**Projects come from T3's sidebar.** The extension reads three things from the React fiber of T3's filter button (`aria-label` starting with "Filter threads by project"): the button's own props (`items`, `onValueChange`), the sidebar's memoized project list (`projectGroups`, with each project's `memberProjectRefs`), and the zustand store that holds T3's filter as `sidebarProjectScopeKeys`. zustand's hook keeps the store in a `useCallback`'s deps, so the store is found among the sidebar's hooks. A project is saved as `<environmentId>:<projectId>`, so groups keep working if you change T3's project grouping setting.
 
-**One project uses T3's own filter.** When the selection is exactly one of T3's projects, the extension sets T3's filter to it, as if you had picked it in T3's menu. Everything then behaves as in T3, including **New thread** in that project.
+**T3's own filter does the work.** The extension sets T3's filter to the selected projects: first through T3's own menu handler, as if the first project were picked there, which also clears T3's thread selection and scrolls the list to the top; then the whole set through the store. Everything then behaves as T3's own filter: the thread list, sidebar search, **Settled (N)**, the ⌘1–⌘9 jump labels and **New thread**. T3 filters by whole projects, so a group that holds only some of a project's member projects, saved under another grouping setting, shows the whole project; its checkbox in the menu shows a dash.
 
-**Several projects hide rows.** T3's filter can hold only one project, so for several the extension sets T3's filter to all projects and hides the rows of other projects with CSS. It finds each row's project in the row's React props: threads, drafts and search results. It also hides the pinned and draft dividers when nothing is left under them, and shows "No threads in Acme" when no row is left. A `MutationObserver` hides new rows as React renders them, before they are painted.
+**T3's own changes win.** When T3 changes its filter itself, the extension follows. That happens with the thread menu's **Filter by <project>**, and when you open a thread outside the filter, which makes T3 clear it. This was checked by calling T3's menu handler directly, with and without Shift, because a script cannot open T3's native thread menu.
 
-**T3's own "Filter by" wins.** When T3 changes its filter itself, as the thread menu's **Filter by <project>** does, the extension follows: the filter becomes that project. This was checked by setting T3's filter directly, because a script cannot open T3's native thread menu.
-
-**It fails open.** If a T3 update renames what the extension reads, it leaves T3's filter button and every row as they are, and logs one warning with `[project-groups]` in the console.
-
-## Known limits
-
-These apply when several projects are selected, so T3's own filter is set to all projects:
-
-- **Settled (N)** counts the settled threads of every project.
-- The ⌘1–⌘9 jump labels number hidden threads too, and ⌘⇧[ and ⌘⇧] move through hidden threads.
-- **New thread** asks for a project from all of them, not only the group's.
-- In sidebar search, the result selected for Enter can be a hidden one.
+**It fails open.** If a T3 update renames what the extension reads, it leaves T3's filter button as it is, and logs one warning with `[project-groups]` in the console.
 
 ## Controls
 
@@ -54,7 +43,7 @@ t3ProjectGroups.catalog();                    // T3's projects: { key, name, ico
 t3ProjectGroups.setFilter({ kind: "all" });
 t3ProjectGroups.setFilter({ kind: "group", id: t3ProjectGroups.groups[0].id });
 t3ProjectGroups.setFilter({ kind: "projects", projects: t3ProjectGroups.catalog()[0].refs });
-t3ProjectGroups.resolve();                    // what the filter does now: mode "all", "native" or "hide"
+t3ProjectGroups.resolve();                    // what the filter asks T3 for: { keys, label, group, chosen }
 t3ProjectGroups.open();                       // opens the menu
 ```
 

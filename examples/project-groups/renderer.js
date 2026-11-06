@@ -122,25 +122,40 @@ if (!window.t3ProjectGroups) {
     };
   }
 
-  // T3's scope picker (`items`, `value`, `onValueChange`) and the sidebar's memoized project
-  // catalog, which knows the member projects of each scope item. Null when either is missing.
+  // T3 keeps its filter in a zustand store as `sidebarProjectScopeKeys`: T3's project keys, [] for
+  // all projects. zustand's hook passes [store, selector] as a useCallback's deps, so the store is
+  // in the hooks of the sidebar component that reads it.
+  function scopeStoreOf(fiber) {
+    for (let hook = fiber.memoizedState; hook && typeof hook === "object" && "next" in hook; hook = hook.next) {
+      const deps = Array.isArray(hook.memoizedState) ? hook.memoizedState[1] : null;
+      const store = Array.isArray(deps) ? deps[0] : null;
+      if (typeof store?.getState === "function" && typeof store.getState()?.setSidebarProjectScopeKeys === "function") return store;
+    }
+    return null;
+  }
+
+  // T3's scope picker (`items`, `onValueChange`), the store holding its filter, and the sidebar's
+  // memoized project catalog, which knows the member projects of each scope item. Null when any
+  // is missing.
   function readT3() {
     const trigger = document.querySelector(TRIGGER);
     let combobox = null;
+    let scope = null;
     let catalog = null;
     for (const fiber of ancestors(fiberOf(trigger), 80)) {
       const props = fiber.memoizedProps;
       if (!combobox && Array.isArray(props?.items) && typeof props.onValueChange === "function") combobox = props;
+      scope ??= scopeStoreOf(fiber);
       for (const cached of fiber.updateQueue?.memoCache?.data ?? []) {
         for (const value of Array.isArray(cached) ? cached : []) {
           if (!catalog && Array.isArray(value?.projectGroups) && Array.isArray(value.projectScopeItems)) catalog = value;
         }
       }
-      if (combobox && catalog) break;
+      if (combobox && scope && catalog) break;
     }
     if (!trigger) return null;
-    if (!combobox || !catalog) {
-      failOpen(`could not find T3's ${combobox ? "project catalog" : "project filter"}; leaving T3's filter alone`);
+    if (!combobox || !scope || !catalog) {
+      failOpen(`could not find T3's ${!combobox ? "project filter" : !scope ? "project filter store" : "project catalog"}; leaving T3's filter alone`);
       return null;
     }
     const projects = catalog.projectGroups.map((project) => ({
@@ -150,7 +165,7 @@ if (!window.t3ProjectGroups) {
       favicon: favicons.get(JSON.stringify([project.environmentId, project.workspaceRoot, project.faviconPath || null])) ?? null,
       refs: project.memberProjectRefs.map((ref) => `${ref.environmentId}:${ref.projectId}`),
     }));
-    return { trigger, combobox, projects };
+    return { trigger, combobox, scope, projects };
   }
 
   // T3's router, from the route match components above the sidebar. Null when it is missing.
@@ -170,100 +185,68 @@ if (!window.t3ProjectGroups) {
     router.navigate({ to: "/projects/$projectKey", params: { projectKey: project.key } });
   }
 
-  // The project of a sidebar row: a thread, a search result or a draft.
-  function rowOf(li) {
-    for (const fiber of ancestors(fiberOf(li), 4)) {
-      const props = fiber.memoizedProps;
-      if (!props || typeof props !== "object") continue;
-      for (const [name, value] of Object.entries(props)) {
-        if (typeof value?.environmentId !== "string") continue;
-        const projectId = typeof value.projectId === "string" ? value.projectId : name === "project" && typeof value.id === "string" ? value.id : null;
-        if (projectId) return { ref: `${value.environmentId}:${projectId}`, pinned: props.isPinned === true, draft: "draftId" in props };
-      }
-    }
-    return null;
-  }
-
   // --- What the filter means for T3 -------------------------------------------------------------
 
-  // all:    no filter, or its group is gone.
-  // native: the selection is exactly one of T3's scope items, so T3's own scope does the work.
-  // hide:   several projects; T3 shows all of them and the rows of other projects are hidden.
+  // The T3 projects the filter selects; none when there is no filter or its group is gone. T3
+  // filters by whole projects, so a group holding only some of a project's member refs (saved
+  // under another grouping setting) selects the whole project.
   function resolve({ filter, groups }, projects) {
     const group = filter.kind === "group" ? groups.find((candidate) => candidate.id === filter.id) : null;
-    const known = new Set(projects.flatMap((project) => project.refs));
-    const refs = new Set(selectedRefs({ filter, groups }).filter((ref) => known.has(ref)));
-    if (!refs.size) return { mode: "all" };
+    const refs = new Set(selectedRefs({ filter, groups }));
     const chosen = projects.filter((project) => project.refs.some((ref) => refs.has(ref)));
-    const label = group?.name ?? chosen.map((project) => project.name).join(", ");
-    const single = projects.find((project) => project.refs.length === refs.size && project.refs.every((ref) => refs.has(ref)));
-    return { mode: single ? "native" : "hide", key: single?.key, refs, label, group, chosen };
+    if (!chosen.length) return { keys: [], chosen };
+    return { keys: chosen.map((project) => project.key), label: group?.name ?? chosen.map((project) => project.name).join(", "), group, chosen };
   }
 
   // --- Applying it ------------------------------------------------------------------------------
 
-  let lastSet = null; // the scope value apply last asked T3 for
-  let lastSeen = null; // T3's scope value at the previous apply
+  // T3's filter and the one the extension wanted, when apply last ran. Null before the first run.
+  let synced = null;
   let warned = false;
 
   function failOpen(reason) {
     if (!warned) console.warn(LOG, reason);
     warned = true;
     trigger.button.remove();
-    document.querySelectorAll("[data-t3pg-hidden], [data-t3pg-replaced], [data-t3pg-empty]").forEach((node) => {
-      node.removeAttribute("data-t3pg-hidden");
-      node.removeAttribute("data-t3pg-replaced");
-      node.removeAttribute("data-t3pg-empty");
-    });
+    document.querySelector("[data-t3pg-replaced]")?.removeAttribute("data-t3pg-replaced");
     closePopover(false);
+  }
+
+  // T3's handler reads the details Base UI passes as the second argument (a shift-click adds a
+  // project instead of replacing the selection), so pass those of a plain click.
+  const changeDetails = () => ({ reason: "item-press", event: new Event("base-ui"), cancel() {}, isCanceled: false });
+  const scopeOf = (t3) => [...t3.scope.getState().sidebarProjectScopeKeys].sort().join("\n");
+
+  // T3's own handler first, as if the first project were picked in its menu: it also clears T3's
+  // thread selection and scrolls the list to the top. Then the whole set, which that handler can
+  // only build one shift-click and one render at a time.
+  function setScope(t3, keys) {
+    const first = t3.combobox.items.find((candidate) => candidate.value === (keys[0] ?? "all"));
+    if (first) t3.combobox.onValueChange(first, changeDetails());
+    t3.scope.getState().setSidebarProjectScopeKeys(keys);
   }
 
   function apply() {
     const t3 = readT3();
     if (!t3) return;
-    const current = t3.combobox.value?.value ?? "all";
-    // T3 changed its scope itself (its thread menu's "Filter by <project>"): follow it.
-    const external = lastSet === null ? state.filter.kind === "all" && current !== "all" : current !== lastSet && current !== lastSeen;
-    lastSeen = current;
-    if (external) {
-      const project = t3.projects.find((candidate) => candidate.key === current);
-      state = { ...state, filter: parseFilter(project ? { kind: "projects", projects: project.refs } : { kind: "all" }) };
+    let seen = scopeOf(t3);
+    // T3 changed its filter itself (its thread menu's "Filter by <project>", or opening a thread
+    // outside the filter): follow it, without writing it back.
+    const followed = synced ? seen !== synced.seen : state.filter.kind === "all" && seen !== "";
+    if (followed) {
+      const keys = new Set(seen.split("\n"));
+      state = { ...state, filter: parseFilter({ kind: "projects", projects: t3.projects.filter((project) => keys.has(project.key)).flatMap((project) => project.refs) }) };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       if (popover.element) renderList();
     }
     const view = resolve(state, t3.projects);
-    const want = view.mode === "native" ? view.key : "all";
-    const item = t3.combobox.items.find((candidate) => candidate.value === want);
-    if (want !== current && item) t3.combobox.onValueChange(item);
-    lastSet = want;
-    renderTrigger(t3, view);
-    hideRows(view);
-  }
-
-  function hideRows(view) {
-    const refs = view.mode === "hide" ? view.refs : null;
-    for (const list of document.querySelectorAll('[data-sidebar="content"] ul')) {
-      const visible = { rows: 0, pinned: 0, draft: 0 };
-      let rows = 0;
-      for (const li of list.children) {
-        const row = refs && rowOf(li);
-        const hidden = Boolean(row) && !refs.has(row.ref);
-        li.toggleAttribute("data-t3pg-hidden", hidden);
-        if (!row) continue;
-        rows++;
-        if (hidden) continue;
-        visible.rows++;
-        if (row.pinned) visible.pinned++;
-        if (row.draft) visible.draft++;
-      }
-      for (const li of list.children) {
-        const section = { "sidebar-pinned-header": "pinned", "sidebar-pinned-divider": "pinned", "sidebar-draft-divider": "draft" }[li.dataset.testid];
-        if (section) li.toggleAttribute("data-t3pg-hidden", Boolean(refs) && visible[section] === 0);
-      }
-      // A note through CSS `::before`, so no node is added to a list React owns.
-      if (refs && rows && !visible.rows) list.setAttribute("data-t3pg-empty", `No threads in ${view.label}`);
-      else list.removeAttribute("data-t3pg-empty");
+    const want = [...view.keys].sort().join("\n");
+    if (!followed && want !== seen && want !== synced?.want) {
+      setScope(t3, view.keys);
+      seen = scopeOf(t3);
     }
+    synced = { seen, want };
+    renderTrigger(t3, view);
   }
 
   // --- Icons ------------------------------------------------------------------------------------
@@ -351,8 +334,8 @@ if (!window.t3ProjectGroups) {
     if (button.nextSibling !== t3.trigger) t3.trigger.before(button);
     t3.trigger.setAttribute("data-t3pg-replaced", "");
     if (button.className !== t3.trigger.className) button.className = t3.trigger.className;
-    const label = view.mode === "all" ? "Filter threads by project" : `Filter threads by project: ${view.label}`;
-    const count = view.mode === "all" || view.group ? 0 : view.chosen.length;
+    const label = view.keys.length ? `Filter threads by project: ${view.label}` : "Filter threads by project";
+    const count = view.group ? 0 : view.chosen.length;
     const signature = JSON.stringify([label, view.group?.icon, count, view.chosen?.[0]?.icon, view.chosen?.[0]?.favicon]);
     if (signature === trigger.signature) return;
     trigger.signature = signature;
@@ -371,6 +354,7 @@ if (!window.t3ProjectGroups) {
   const popover = { element: null, list: null, search: null, query: "" };
 
   function openPopover() {
+    if (popover.element) return popover.search.focus();
     if (!readT3()) return;
     loadFavicons();
     popover.query = "";
@@ -726,9 +710,10 @@ if (!window.t3ProjectGroups) {
 
   // --- Keeping it applied -----------------------------------------------------------------------
 
-  // React re-renders rows and may recreate T3's trigger. Re-apply right after each change, before
-  // the next paint, so hidden rows never flash; an animation frame would also never come while
-  // the window is hidden. Changes in the chat area or in our own UI cannot affect the sidebar.
+  // React may recreate T3's trigger, and a change to T3's filter or projects re-renders the
+  // sidebar. Re-apply right after each change, before the next paint, so T3's own button never
+  // flashes; an animation frame would also never come while the window is hidden. Changes in the
+  // chat area or in our own UI cannot affect the sidebar.
   const unrelated = (node) =>
     trigger.button.contains(node) || popover.element?.contains(node) || editor?.dialog.contains(node) || Boolean(node.closest?.('[data-slot="sidebar-inset"]'));
   new MutationObserver((mutations) => {
@@ -760,7 +745,7 @@ if (!window.t3ProjectGroups) {
     catalog: () => readT3()?.projects ?? null,
     // { kind: "all" } | { kind: "group", id } | { kind: "projects", projects: [ref, ...] }
     setFilter,
-    // What the current filter does: { mode: "all" | "native" | "hide", ... }.
+    // What the current filter asks T3 for: { keys (T3's project keys, [] for all), label, group, chosen }.
     resolve: () => {
       const t3 = readT3();
       return t3 && resolve(state, t3.projects);
