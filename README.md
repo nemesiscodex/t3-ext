@@ -153,7 +153,56 @@ If `main.js` exports a function, the host calls it with `{ id, dir, electron }`.
 
 Style your UI with T3's CSS variables, such as `var(--background)`, `var(--foreground)`, `var(--border)` and `var(--primary)`, so it follows light and dark mode.
 
-T3 Code windows have a `window.t3ext` object:
+`renderer.js` runs once per window load, inside a function with two arguments:
+
+- `extensionId`: the folder name. People link extensions in under any name, so use it instead of writing the name in your code.
+- `ext`: what the host gives your extension. It keeps the details of T3's page in one place, [`host/page.js`](host/page.js), so when a T3 Code release moves something, one fix there repairs every extension that uses it.
+
+```js
+// Config: any JSON value, saved by the host and shared by every T3 Code window.
+const stop = ext.config.subscribe((value) => {}); // the saved value once loaded, then each change from any window
+await ext.config.update((value) => ({ ...value, theme: "dark" })); // writes run in order; resolves with what was saved
+await ext.config.get();
+
+// A settings panel, shown by the extension manager.
+ext.settings.register((container, { close }) => {
+  container.append(/* your controls */);
+  return () => {}; // optional: runs when the panel closes
+});
+ext.settings.open(); // opens the manager on your panel; false when the manager is off
+ext.settings.canOpen();
+
+// T3's sidebar.
+ext.t3.filterButton();       // T3's "Filter threads by project" button, or null
+ext.t3.projects();           // [{ key, name, icon, environmentId, workspaceRoot, faviconPath, refs, members }], or null
+ext.t3.projectFilter();      // { keys(), set(keys) } for T3's project filter, or null
+ext.t3.threadRows(threadId); // [{ element, environmentId, threadId }]; all rows without an id
+ext.t3.rowOf(node);          // the row a node is in, or null
+ext.t3.rowData(row.element); // { thread, project, wokeAt } the row renders from, or null
+ext.t3.openThread();         // { environmentId, threadId } of the open thread, or null
+ext.t3.fiberOf(node);        // the live React fiber of a node, to read what the rest does not cover
+
+// T3's thread updates, read from its WebSocket as T3 receives them.
+ext.t3.threads.subscribe((event) => {}); // { kind: "updated", shell, live }, { kind: "removed", threadId },
+                                         // { kind: "command", command } (settle, snooze, unsnooze), { kind: "snapshot" }
+ext.t3.threads.get(threadId);        // the latest thread shell, or null
+ext.t3.threads.status(shell);        // "needs-you", "waiting", "working", "idle", "failed" or "ready"
+ext.t3.threads.rowStatus(threadId);  // the same as the thread's sidebar row, its subagents' questions included
+ext.t3.threads.asks(shell);          // "approval", "input" or null
+ext.t3.threads.owner(shell);         // the thread whose row shows a subagent's question
+ext.t3.threads.isSubagent(shell);
+
+// Page UI that matches the manager and stays out of T3's keyboard shortcuts.
+ext.ui.el("button", { className: "t3ext-button", onClick: () => {} }, "Label");
+ext.ui.icon([["path", { d: "M20 6 9 17l-5-5" }]], "my-icon"); // a lucide icon from its nodes
+const popup = ext.ui.layer(element, { anchor, modal, place, onKey, onClose }); // popup.close(returnFocus)
+```
+
+A `null` from `ext.t3` means T3 does not show that right now, or a T3 release renamed it. Handle it: leave T3 alone and log once. `config.update` gets the saved value and returns the new one; `null` deletes it. Config survives disabling the extension, and is deleted when you remove it. `ext.ui.layer` puts an element over T3: Escape closes it, a click outside closes it unless it is `modal`, and a modal one keeps Tab inside. The manager's `close()` for a panel goes back to the extension list, and panels can use its `t3ext-button` and `t3ext-switch` classes. [Streaming Mode](examples/streaming-mode) has a full panel.
+
+If `renderer.js` throws while it loads, the extension manager shows the error on its row. Errors later, in event handlers or timers, show only in DevTools.
+
+T3 Code windows also have a `window.t3ext` object, which the extension manager uses:
 
 ```js
 await window.t3ext.list();                    // every extension, with enabled, parts and error
@@ -161,29 +210,10 @@ await window.t3ext.setEnabled("my-ext", false);
 await window.t3ext.remove("my-ext");          // moves the folder to the Trash
 await window.t3ext.add();                     // asks for a folder, then copies it in
 await window.t3ext.openFolder("my-ext");      // or openFolder() for the extensions folder
-await window.t3ext.getConfig("my-ext");       // the extension's saved config, or null
-await window.t3ext.setConfig("my-ext", { theme: "dark" }); // saves it, resolves with what was saved
-const stop = window.t3ext.onConfigChange((id, value) => {}); // after any setConfig, in every window
+await window.t3ext.getConfig("my-ext");       // what ext.config uses
 ```
 
-Changes to `style.css` and `renderer.js` apply when you reload the window (**Extensions > Reload Window**). Changes to `main.js` apply when you restart T3 Code through T3 Code+. Enabled state and config live in `~/.t3/extensions.json` as `{ "disabled": ["id", ...], "config": { "id": ... } }`.
-
-**Know your own id.** `renderer.js` runs with a variable `extensionId` that holds its folder name. People link extensions in under any name, so use `extensionId` instead of writing the name in your code.
-
-**Save settings with config.** A config is any JSON value. `setConfig` keeps what JSON keeps (as `JSON.stringify` does), and `null` deletes it. After a `setConfig`, every T3 Code window, the one that saved included, gets `onConfigChange` with the id and the saved value. Filter on your own id. Config survives disabling the extension, and is deleted when you remove it.
-
-**Add a settings panel.** Register a function under your id, and the extension manager shows a **Settings** button on your row while the extension is on:
-
-```js
-(window.t3extSettings ??= new Map()).set(extensionId, (container, { close }) => {
-  container.append(/* your controls */);
-  return () => {}; // optional: runs when the panel closes
-});
-```
-
-The manager calls the function with an empty element inside its dialog, and runs the returned cleanup when the person goes back, presses Escape or closes the manager. `close()` goes back to the extension list. To open your panel from your own UI, dispatch `new CustomEvent("t3ext:manage", { detail: { settings: extensionId } })` on `window`. Panels can use the manager's `t3ext-button` and `t3ext-switch` classes to match it. [Streaming Mode](examples/streaming-mode) has a full panel.
-
-The panel map lives on `window` because `window.t3ext` is frozen. Config and panels need a host from this version on. After you update this checkout, reloaded windows get the new `renderer.js` files, but the host updates when T3 Code restarts through T3 Code+, so check that `window.t3ext.getConfig` exists before you use it.
+Changes to `style.css` and `renderer.js` apply when you reload the window (**Extensions > Reload Window**), and so do changes to `host/page.js`. Changes to `main.js`, and to the rest of the host, apply when you restart T3 Code through T3 Code+. `ext` needs a host from this version on: after you update this checkout, restart T3 Code through T3 Code+ before you reload, or every `renderer.js` that uses `ext` stops with "ext is not defined". Enabled state and config live in `~/.t3/extensions.json` as `{ "disabled": ["id", ...], "config": { "id": ... } }`.
 
 **Develop with a symlink.** Keep your extension in its own repository and link it in:
 

@@ -121,7 +121,7 @@ async function main() {
     step(`window.t3ext is present after the reload; list() returns ${JSON.stringify(ids)}`);
     assert.equal(await page.evaluate(`getComputedStyle(document.documentElement).getPropertyValue("--t3ext-sample").trim()`), "applied");
     step("sample renderer.js ran and sample style.css applied (computed --t3ext-sample is 'applied')");
-    await h.waitFor("the manager renderer", () => page.evaluate("window.__t3extManager === true"));
+    await h.waitFor("the manager renderer", () => page.evaluate(`window[Symbol.for("t3ext.page")]?.ran("builtin:extension-manager") === true`));
     step("the builtin extension manager renderer ran");
     const mainMarker = JSON.parse(fs.readFileSync(path.join(home, "sample-main-ran.json"), "utf8"));
     assert.equal(mainMarker.pid, pid);

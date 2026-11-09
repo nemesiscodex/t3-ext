@@ -1,9 +1,8 @@
-if (!window.t3Doom) {
+{
   // doom-js (github.com/spipu/doom-js), played from its own site. One frame lives for the whole
   // window and is only shown and hidden, so the game carries on from thread to thread.
   const GAME_URL = "https://doom.spipu.net/";
   const GAME_ORIGIN = new URL(GAME_URL).origin;
-  const RUNNING = ["preparing", "queued", "starting", "running", "waiting"];
   // The sidebar's status labels, for threads no server message has mentioned yet.
   const ROW_PHASES = { Working: "working", Connecting: "working", "Pending Approval": "needs-you", "Awaiting Input": "needs-you" };
 
@@ -17,25 +16,15 @@ if (!window.t3Doom) {
 
   // --- What the open thread is doing -----------------------------------------------------------
 
-  // A phase is "working" (play), "needs-you" (a question or an approval) or "idle" (done).
-  // T3 sends a `thread.updated` message whenever a thread's run status or pending request
-  // changes. Its first snapshot arrives before this script runs, so until a thread changes, its
+  // A phase is "working" (play), "needs-you" (a question or an approval) or "idle" (done), as
+  // the thread's sidebar row shows it. T3 sends a thread's state whenever it changes. Its first
+  // snapshot arrives before this script runs, so until a thread changes, the label on its
   // sidebar row says what it is doing.
-  const threads = new Map();
-  const openThreadId = () => location.hash.match(/^#\/[^/?]+\/([^/?]+)$/)?.[1] ?? null; // "#/<environmentId>/<threadId>"
-
-  function remember(thread) {
-    if (!thread?.id) return;
-    threads.set(thread.id, {
-      working: RUNNING.includes(thread.activityRunStatus ?? thread.status),
-      waitingOnYou: thread.pendingRuntimeRequest != null,
-      parentId: thread.lineage?.relationshipToParent === "subagent" ? thread.lineage.parentThreadId : null,
-    });
-  }
+  const openThreadId = () => ext.t3.openThread()?.threadId ?? null;
 
   function rowPhase(threadId) {
-    for (const row of document.querySelectorAll(`[data-thread-item$=":${threadId}"]`)) {
-      for (const node of row.querySelectorAll("[aria-label]")) {
+    for (const { element } of ext.t3.threadRows(threadId)) {
+      for (const node of element.querySelectorAll("[aria-label]")) {
         const phase = ROW_PHASES[node.getAttribute("aria-label")];
         if (phase) return phase;
       }
@@ -43,39 +32,12 @@ if (!window.t3Doom) {
     return "idle";
   }
 
-  // A subagent waiting on you counts for its parent, as in the sidebar.
   function phaseOf(threadId) {
-    const thread = threads.get(threadId);
-    if (!thread) return rowPhase(threadId);
-    const child = [...threads.values()].some((other) => other.parentId === threadId && other.waitingOnYou);
-    if (thread.waitingOnYou || child) return "needs-you";
-    return thread.working ? "working" : "idle";
+    const status = ext.t3.threads.rowStatus(threadId);
+    if (status === null) return rowPhase(threadId);
+    if (status === "needs-you") return "needs-you";
+    return status === "working" || status === "waiting" ? "working" : "idle";
   }
-
-  // T3's socket opened before this script ran, so the hook sits on the prototype. It runs
-  // inside T3's own code, so it must never throw.
-  const onFrame = guard((text) => {
-    const values = JSON.parse(text)?.values;
-    for (const value of Array.isArray(values) ? values : []) {
-      if (value?.kind === "thread.updated") remember(value.thread);
-      else if (value?.kind === "snapshot") value.snapshot?.threads?.forEach(remember);
-    }
-    update();
-  });
-
-  const data = Object.getOwnPropertyDescriptor(MessageEvent.prototype, "data");
-  const inspected = new WeakSet();
-  Object.defineProperty(MessageEvent.prototype, "data", {
-    ...data,
-    get() {
-      const value = data.get.call(this);
-      if (typeof value === "string" && !inspected.has(this) && this.target instanceof WebSocket) {
-        inspected.add(this);
-        if (value.includes('"thread.updated"') || value.includes('"kind":"snapshot"')) onFrame(value);
-      }
-      return value;
-    },
-  });
 
   // --- The game --------------------------------------------------------------------------------
 
@@ -183,6 +145,16 @@ if (!window.t3Doom) {
 
   addEventListener("message", (event) => {
     if (event.origin === GAME_ORIGIN && event.data === "t3doom:ready") bridged = true;
+  });
+  // A reconnect replays many messages at once; one update after them is enough.
+  let queued = false;
+  ext.t3.threads.subscribe(() => {
+    if (queued) return;
+    queued = true;
+    queueMicrotask(() => {
+      queued = false;
+      update();
+    });
   });
   addEventListener("hashchange", update);
   setInterval(update, 500);

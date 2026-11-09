@@ -13,7 +13,7 @@ The game is [doom-js](https://github.com/spipu/doom-js), loaded from `https://do
 
 ## How it knows
 
-**What the thread is doing comes from T3's own messages.** T3 sends a `thread.updated` message over its WebSocket whenever a thread's run status or pending request changes. `renderer.js` reads those messages as T3 receives them. Until a thread changes, the extension reads the status label on its sidebar row (Working, Pending Approval, Awaiting Input).
+**What the thread is doing comes from T3's own messages.** T3 sends a `thread.updated` message over its WebSocket whenever a thread's run status or pending request changes. `ext.t3.threads.rowStatus()` reads those messages as T3 receives them, with T3's own rules, so the game pauses for a question or an approval exactly when the thread's sidebar row says it needs you. Until a thread changes, the extension reads the status label on its sidebar row (Working, Pending Approval, Awaiting Input).
 
 **Pausing needs `main.js`.** The game runs in a frame from another origin, so the T3 window cannot reach into it. The main process can: `main.js` adds a small listener to every Doom frame, which pauses the game and its sound when the window asks. Without `main.js`, the game hides but keeps running, and the console says so. `main.js` loads when T3 Code starts through T3 Code+, or when extensions are attached.
 

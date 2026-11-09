@@ -1,10 +1,7 @@
-if (!window.t3StreamingMode) {
+{
   const STORAGE_KEY = "t3ext.streaming-mode";
   const LOG = "[streaming-mode]";
-  const TRIGGER = 'button[data-slot="combobox-trigger"][aria-label^="Filter threads by project"]';
-  const THREAD_ROW = "[data-thread-item]";
   const MARK = "data-t3sm-blur";
-  const SVG_NS = "http://www.w3.org/2000/svg";
   const GITHUB = "github.com/";
   const RECHECK_MS = 24 * 60 * 60 * 1000;
   const RATE_LIMIT_PAUSE_MS = 60 * 60 * 1000;
@@ -12,11 +9,7 @@ if (!window.t3StreamingMode) {
   // T3's label for threads outside any project. It names nothing.
   const PLACEHOLDER = "No project";
 
-  // A host older than per-extension config passes no id and has no getConfig. The extension then
-  // keeps the one built-in profile and offers no profile menu or settings panel.
-  const api = window.t3ext;
-  const ID = typeof extensionId === "string" ? extensionId : null;
-  const configurable = ID !== null && ["getConfig", "setConfig", "onConfigChange"].every((name) => typeof api?.[name] === "function");
+  const { el } = ext.ui;
 
   // From T3's bundle (lucide, ISC license).
   const ICONS = {
@@ -56,20 +49,13 @@ if (!window.t3StreamingMode) {
   }
 
   // null until the host answers. Nothing counts as visible then, so no name shows early.
-  let config = configurable ? null : structuredClone(DEFAULT_CONFIG);
+  let config = null;
   const activeProfile = () => config?.profiles.find((profile) => profile.id === config.active) ?? null;
   const withProfile = (current, id, change) => ({ ...current, profiles: current.profiles.map((profile) => (profile.id === id ? change(profile) : profile)) });
 
-  // Writes run one after another, each on the config the previous one produced, so quick changes
-  // do not undo each other. Every window, this one too, applies the host's broadcast of the result.
-  let writes = Promise.resolve();
-  function updateConfig(change) {
-    writes = writes
-      .then(() => api.setConfig(ID, change(config)))
-      .then(applyConfig)
-      .catch((error) => console.error(LOG, "could not save profiles", error));
-    return writes;
-  }
+  // Every window, this one too, applies the saved result through ext.config.subscribe.
+  const updateConfig = (change) =>
+    ext.config.update((saved) => change(parseConfig(saved))).catch((error) => console.error(LOG, "could not save profiles", error));
 
   // --- Saved state ------------------------------------------------------------------------------
 
@@ -119,46 +105,23 @@ if (!window.t3StreamingMode) {
 
   // --- Reading T3 -------------------------------------------------------------------------------
 
-  // A DOM node can still point at the fiber of the previous render, whose props are stale. The
-  // one whose root is the root's `current` is the live one.
-  function fiberOf(node) {
-    const key = node && Object.keys(node).find((name) => name.startsWith("__reactFiber$"));
-    const fiber = key && node[key];
-    if (!fiber) return null;
-    let top = fiber;
-    while (top.return) top = top.return;
-    return top.stateNode?.current === top ? fiber : (fiber.alternate ?? fiber);
-  }
-
-  // The sidebar's memoized project catalog, found from T3's project filter button.
-  function readCatalog(trigger) {
-    for (let fiber = fiberOf(trigger), i = 0; fiber && i < 80; fiber = fiber.return, i++) {
-      for (const cached of fiber.updateQueue?.memoCache?.data ?? []) {
-        for (const value of Array.isArray(cached) ? cached : []) {
-          if (Array.isArray(value?.projectGroups) && value.projectGroups.every((group) => Array.isArray(group?.memberProjects))) return value;
-        }
-      }
-    }
-    return null;
-  }
-
   // Every clone and worktree of one repository shares its key, so picking it covers them all.
-  const projectKey = (project) => project?.repositoryIdentity?.canonicalKey?.toLowerCase() || project?.workspaceRoot || null;
+  const projectKey = (member) => member?.repository?.key?.toLowerCase() || member?.workspaceRoot || null;
 
   const textsOf = (...values) =>
     [...new Set(values.filter((text) => typeof text === "string").map((text) => text.trim()).filter((text) => text && text !== PLACEHOLDER))].sort();
 
   // Every text T3 shows for each project: the sidebar name, the folder name, its path, its
   // repository's name, and the name of its sidebar group.
-  function projectsOf(catalog) {
+  function projectsOf(groups) {
     const projects = {};
-    for (const group of catalog.projectGroups) {
-      for (const project of group.memberProjects) {
-        const key = projectKey(project);
+    for (const group of groups) {
+      for (const member of group.members) {
+        const key = projectKey(member);
         if (!key) continue;
-        const identity = project.repositoryIdentity;
-        const known = projects[key] ?? { label: textsOf(identity?.displayName)[0] ?? textsOf(project.title)[0] ?? key, detail: project.workspaceRoot ?? "", texts: [] };
-        known.texts = textsOf(...known.texts, project.title, project.workspaceRoot, identity?.displayName, identity?.canonicalKey, group.displayName);
+        const repository = member.repository;
+        const known = projects[key] ?? { label: textsOf(repository?.name)[0] ?? textsOf(member.title)[0] ?? key, detail: member.workspaceRoot ?? "", texts: [] };
+        known.texts = textsOf(...known.texts, member.title, member.workspaceRoot, repository?.name, repository?.key, group.name);
         projects[key] = known;
       }
     }
@@ -167,14 +130,8 @@ if (!window.t3StreamingMode) {
 
   // The thread and project each sidebar row renders from, null when T3 renamed what this reads.
   function readThreadRows() {
-    const rows = [...document.querySelectorAll(THREAD_ROW)];
-    const read = rows.flatMap((row) => {
-      for (let fiber = fiberOf(row), i = 0; fiber && i < 4; fiber = fiber.return, i++) {
-        const props = fiber.memoizedProps;
-        if (props?.thread?.id && "project" in props) return [props];
-      }
-      return [];
-    });
+    const rows = ext.t3.threadRows();
+    const read = rows.map((row) => ext.t3.rowData(row.element)).filter((data) => data && "project" in data);
     return rows.length && !read.length ? null : read;
   }
 
@@ -284,28 +241,7 @@ if (!window.t3StreamingMode) {
 
   // --- Building UI ------------------------------------------------------------------------------
 
-  const el = (tag, props = {}, ...children) => {
-    const node = document.createElement(tag);
-    for (const [key, value] of Object.entries(props)) {
-      if (value === false || value == null) continue;
-      if (key.startsWith("on")) node.addEventListener(key.slice(2).toLowerCase(), value);
-      else if (key === "className") node.className = value;
-      else node.setAttribute(key, value === true ? "" : String(value));
-    }
-    node.append(...children.flat().filter((child) => child != null && child !== false));
-    return node;
-  };
-
-  function lucide(name) {
-    const icon = document.createElementNS(SVG_NS, "svg");
-    for (const [key, value] of Object.entries({ viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", class: "t3sm-icon" })) icon.setAttribute(key, value);
-    for (const [tag, attributes] of ICONS[name]) {
-      const part = document.createElementNS(SVG_NS, tag);
-      for (const [key, value] of Object.entries(attributes)) part.setAttribute(key, value);
-      icon.append(part);
-    }
-    return icon;
-  }
+  const lucide = (name) => ext.ui.icon(ICONS[name], "t3sm-icon");
 
   const clock = (time) => new Date(time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
@@ -348,7 +284,7 @@ if (!window.t3StreamingMode) {
     const label = profile
       ? state.on ? `Streaming mode is on with ${profile.name}: show project names` : `Streaming mode: blur project names with ${profile.name}`
       : state.on ? "Streaming mode is on: show project names" : "Streaming mode: blur private project names";
-    const title = `${label}\n${configurable ? "Right-click for profiles and GitHub checks." : "Right-click to check GitHub again."}`;
+    const title = `${label}\nRight-click for profiles and GitHub checks.`;
     const key = `${state.on}\n${checkingAll}\n${title}`;
     if (painted === key) return;
     painted = key;
@@ -361,27 +297,24 @@ if (!window.t3StreamingMode) {
 
   // --- The eye's menu ---------------------------------------------------------------------------
 
-  let menu = null;
+  let menu = null; // the open layer
 
-  function openMenu() {
-    menu = el("div", { className: "t3sm-menu dropdown-glass", role: "menu", "aria-label": "Streaming mode" });
-    document.body.append(menu);
-    renderMenu();
+  // Below the eye, or above it when there is no room below.
+  function placeMenu(element) {
     const anchor = button.getBoundingClientRect();
     const below = anchor.bottom + 6;
-    menu.style.left = `${Math.max(8, Math.min(anchor.left, innerWidth - menu.offsetWidth - 8))}px`;
-    menu.style.top = `${below + menu.offsetHeight > innerHeight - 8 ? Math.max(8, anchor.top - 6 - menu.offsetHeight) : below}px`;
-    button.setAttribute("aria-expanded", "true");
-    (menu.querySelector('[aria-checked="true"]') ?? menu.querySelector("[data-key]"))?.focus();
+    element.style.left = `${Math.max(8, Math.min(anchor.left, innerWidth - element.offsetWidth - 8))}px`;
+    element.style.top = `${below + element.offsetHeight > innerHeight - 8 ? Math.max(8, anchor.top - 6 - element.offsetHeight) : below}px`;
   }
 
-  function closeMenu(returnFocus) {
-    if (!menu) return;
-    menu.remove();
-    menu = null;
-    button.removeAttribute("aria-expanded");
-    if (returnFocus && button.isConnected) button.focus();
+  function openMenu() {
+    const element = el("div", { className: "t3sm-menu dropdown-glass", role: "menu", "aria-label": "Streaming mode" });
+    renderMenu(element);
+    menu = ext.ui.layer(element, { anchor: button, place: placeMenu, onKey: onMenuKey, onClose: () => (menu = null) });
+    (element.querySelector('[aria-checked="true"]') ?? element.querySelector("[data-key]"))?.focus();
   }
+
+  const closeMenu = (returnFocus) => menu?.close(returnFocus);
 
   function menuItem({ key, role = "menuitem", checked = false, label, detail, disabled = false, onClick }) {
     return el(
@@ -401,11 +334,11 @@ if (!window.t3StreamingMode) {
     );
   }
 
-  function renderMenu() {
-    if (!menu) return;
-    const focused = menu.contains(document.activeElement) ? document.activeElement.dataset.key : null;
+  function renderMenu(element = menu?.element) {
+    if (!element) return;
+    const focused = element.contains(document.activeElement) ? document.activeElement.dataset.key : null;
     const items = [];
-    if (configurable && config) {
+    if (config) {
       items.push(el("div", { className: "t3sm-menu-label", role: "presentation" }, "Profile"));
       for (const profile of config.profiles) {
         items.push(menuItem({ key: `profile:${profile.id}`, role: "menuitemradio", checked: profile.id === config.active, label: profile.name, onClick: () => chooseProfile(profile.id) }));
@@ -414,9 +347,9 @@ if (!window.t3StreamingMode) {
     }
     items.push(menuItem({ key: "check", label: "Check GitHub again", detail: checkStatus(), disabled: checkingAll, onClick: checkAll }));
     // The manager opens the settings panel. Without it, the item would do nothing.
-    if (configurable && window.__t3extManager === true) items.push(menuItem({ key: "edit", label: "Edit profiles…", onClick: editProfiles }));
-    menu.replaceChildren(...items);
-    if (focused) menu.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus();
+    if (ext.settings.canOpen()) items.push(menuItem({ key: "edit", label: "Edit profiles…", onClick: editProfiles }));
+    element.replaceChildren(...items);
+    if (focused) element.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus();
   }
 
   function chooseProfile(id) {
@@ -426,11 +359,11 @@ if (!window.t3StreamingMode) {
 
   function editProfiles() {
     closeMenu(true);
-    dispatchEvent(new CustomEvent("t3ext:manage", { detail: { settings: ID } }));
+    ext.settings.open();
   }
 
   function onMenuKey(event) {
-    const items = [...menu.querySelectorAll("[data-key]")];
+    const items = [...menu.element.querySelectorAll("[data-key]")];
     const at = items.indexOf(document.activeElement);
     const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[event.key];
     if (to !== undefined) {
@@ -439,31 +372,11 @@ if (!window.t3StreamingMode) {
     } else if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       items[at]?.click();
-    } else if (event.key === "Escape" || event.key === "Tab") {
+    } else if (event.key === "Tab") {
       event.preventDefault();
       closeMenu(true);
     }
   }
-
-  // T3 handles keys on window in the capture phase and swallows some of them, so the menu takes
-  // its keys there first, and T3's shortcuts stay out of it.
-  addEventListener(
-    "keydown",
-    (event) => {
-      if (!menu?.contains(event.target)) return;
-      event.stopImmediatePropagation();
-      onMenuKey(event);
-    },
-    true,
-  );
-  addEventListener(
-    "pointerdown",
-    (event) => {
-      if (menu && !menu.contains(event.target) && !button.contains(event.target)) closeMenu(false);
-    },
-    true,
-  );
-  addEventListener("resize", () => closeMenu(false));
 
   // --- The settings panel -----------------------------------------------------------------------
 
@@ -719,12 +632,12 @@ if (!window.t3StreamingMode) {
 
   // Projects that left T3's list are dropped, and so are their threads.
   function sync() {
-    const trigger = document.querySelector(TRIGGER);
+    const trigger = ext.t3.filterButton();
     if (!trigger) return;
     placeButton(trigger);
-    const catalog = readCatalog(trigger);
-    if (!catalog) return warnOnce("could not read T3's project list; blurring the names it last saw");
-    const projects = projectsOf(catalog);
+    const groups = ext.t3.projects();
+    if (!groups) return warnOnce("could not read T3's project list; blurring the names it last saw");
+    const projects = projectsOf(groups);
     const rows = readThreadRows();
     if (!rows) warnOnce("could not read T3's thread rows; blurring the thread titles it last saw");
     const threads = Object.fromEntries(Object.entries(rows ? threadsOf(rows) : state.threads).filter(([, thread]) => thread.project === null || Object.hasOwn(projects, thread.project)));
@@ -771,14 +684,8 @@ if (!window.t3StreamingMode) {
     repaint();
   });
 
-  if (configurable) {
-    api.onConfigChange((id, value) => id === ID && applyConfig(value));
-    api.getConfig(ID).then(applyConfig, (error) => {
-      console.error(LOG, "could not read profiles; using the default", error);
-      applyConfig(null);
-    });
-    (window.t3extSettings ??= new Map()).set(ID, mountPanel);
-  }
+  ext.config.subscribe(applyConfig);
+  ext.settings.register(mountPanel);
 
   window.t3StreamingMode = {
     get on() {
@@ -794,7 +701,7 @@ if (!window.t3StreamingMode) {
     set profile(nameOrId) {
       const profile = config?.profiles.find((candidate) => candidate.id === nameOrId) ?? config?.profiles.find((candidate) => candidate.name === nameOrId);
       if (!profile) throw new Error(`${LOG} no profile named "${nameOrId}"`);
-      if (configurable && profile.id !== config.active) updateConfig((current) => ({ ...current, active: profile.id }));
+      if (profile.id !== config.active) updateConfig((current) => ({ ...current, active: profile.id }));
     },
     get profiles() {
       return structuredClone(config?.profiles ?? []);

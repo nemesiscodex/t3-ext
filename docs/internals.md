@@ -52,13 +52,15 @@ Both routes need the `EnableNodeCliInspectArguments` [Electron fuse](https://www
 `host/index.cjs` runs in T3's main process and uses ordinary Electron APIs:
 
 - registers `host/preload.cjs` on the default session, which exposes `window.t3ext` to `t3code://` pages;
-- inserts each enabled extension's `style.css` with `webContents.insertCSS` and runs its `renderer.js` with `executeJavaScript`, in every T3 window, each time its page reaches `dom-ready`. Each `renderer.js` runs inside a function whose `extensionId` argument is its folder name;
+- inserts each enabled extension's `style.css` with `webContents.insertCSS` and runs its `renderer.js` with `executeJavaScript`, in every T3 window, each time its page reaches `dom-ready`. First it runs `host/page.js` there. Then each `renderer.js` runs inside a function that `page.js` calls with `extensionId` (the folder name) and `ext`, once per page. `page.js` catches what a `renderer.js` throws while it loads and returns the message, and the host records it as that extension's error;
 - wraps `Menu.setApplicationMenu` so every menu T3 sets gets an **Extensions** menu;
 - answers the `t3ext:*` IPC calls behind `window.t3ext`, and refuses them from any page that is not `t3code://`;
 - after a `t3ext:setConfig`, sends `t3ext:config` with the id and the saved value to every `t3code://` page, the sender included. The preload passes it on to `onConfigChange` listeners without the IPC event;
 - `require`s each enabled extension's `main.js`.
 
-`host/registry.cjs` reads the extension folders and `~/.t3/extensions.json`, which holds `{ "disabled": [ids], "config": { id: value } }`. A file that is missing or not JSON reads as nothing disabled and no config. Every write keeps both keys, and removing an extension drops its id from both. The built-in extension manager in `host/builtin/extension-manager` is an ordinary extension that uses `window.t3ext`. Settings panels register in the page's `window.t3extSettings` map, not on `window.t3ext`, because the context bridge freezes that object.
+`host/registry.cjs` reads the extension folders and `~/.t3/extensions.json`, which holds `{ "disabled": [ids], "config": { id: value } }`. A file that is missing or not JSON reads as nothing disabled and no config. Every write keeps both keys, and removing an extension drops its id from both. The built-in extension manager in `host/builtin/extension-manager` is an ordinary extension that uses `window.t3ext`, plus `ext.manager`, which only it gets: it reads the settings panels other extensions register and serves `ext.settings.open()`. **Extensions > Manage Extensions…** calls the same opener through `page.js`.
+
+`host/page.js` is the only code that knows T3's page structure and React internals: the filter button, the project catalog in its memo cache, the filter store, the thread rows and their props, the hash route, and the WebSocket messages with T3's rules for a thread's status. It hooks `WebSocket.prototype.send` and the `MessageEvent` `data` getter once per page, the first time an extension subscribes to thread updates. The preload cannot share code with the host, because T3's windows are sandboxed, so the IPC channel names are written in both `host/index.cjs` and `host/preload.cjs`.
 
 ## The launcher app
 
@@ -89,12 +91,13 @@ The tests check the plist and run the agent's command by hand. A real launchd tr
 | `host/registry.cjs` | Extension folders, enabled state and config |
 | `host/presence.cjs` | The per-pid socket that tells the launcher the host is loaded |
 | `host/preload.cjs` | Exposes `window.t3ext` |
+| `host/page.js` | Runs in each T3 window: each extension's `ext`, and the one place that reads T3's page |
 
 ## Tests
 
 ```sh
-npm test       # unit tests: registry, CLI, LaunchAgent plist, fuse reader, host presence, launch race (starts a fake app)
+npm test       # unit tests: registry, CLI, LaunchAgent plist, fuse reader, host presence, page.js, launch race (starts a fake app)
 npm run e2e    # clones the installed app into a temp dir and drives it over CDP: test/e2e.cjs, then test/e2e-attach.cjs
 ```
 
-The end-to-end tests never touch the installed app. Each makes an APFS clone of the app in a temp directory, isolated with its own `HOME` and `T3CODE_HOME`. `test/e2e.cjs` opens the clone through a T3 Code+ built in the temp directory, and checks the sample extension in `test/fixtures/sample`, the menu, the manager and the settings item. `test/e2e-attach.cjs` opens the clone without the launcher, then checks `attach` (including with port 9229 taken), a second `attach`, `launch`, `status`, and the LaunchAgent's command waiting for the clone to start. When they finish, they kill every process running from the temp directory. `test/e2e.cjs` rewrites `docs/*.png`.
+The end-to-end tests never touch the installed app. Each makes an APFS clone of the app in a temp directory, isolated with its own `HOME` and `T3CODE_HOME`. `test/e2e.cjs` opens the clone through a T3 Code+ built in the temp directory, and checks the sample extension in `test/fixtures/sample` (its `ext` config and settings panel included), a `renderer.js` that throws, the menu, the manager and the settings item, then loads the four examples and checks that none reports an error. The clone has no projects, so that run does not show the sidebar parts of `page.js` finding anything. `test/e2e-attach.cjs` opens the clone without the launcher, then checks `attach` (including with port 9229 taken), a second `attach`, `launch`, `status`, and the LaunchAgent's command waiting for the clone to start. When they finish, they kill every process running from the temp directory. `test/e2e.cjs` rewrites `docs/*.png`.

@@ -1,7 +1,6 @@
-if (!window.__t3extManager) {
-  window.__t3extManager = true;
-
+{
   const api = window.t3ext;
+  const { el, layer } = ext.ui;
   const PUZZLE_PATH =
     '<path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"></path>';
   const BACK_ICON =
@@ -9,23 +8,9 @@ if (!window.__t3extManager) {
   const FOCUSABLE = "button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex='-1'])";
   const pending = { reload: false, restart: false };
   let overlay = null;
-  let opener = null;
+  let modal = null; // the open layer
   let extensions = [];
   let settings = null; // { id, view, cleanup } while a settings panel is shown
-
-  // Extensions register panels in the page itself: window.t3ext is frozen by the context bridge.
-  const panels = () => (window.t3extSettings instanceof Map ? window.t3extSettings : new Map());
-
-  const el = (tag, props = {}, ...children) => {
-    const node = document.createElement(tag);
-    for (const [key, value] of Object.entries(props)) {
-      if (key.startsWith("on")) node.addEventListener(key.slice(2).toLowerCase(), value);
-      else if (key === "className") node.className = value;
-      else if (value !== false && value != null) node.setAttribute(key, value === true ? "" : String(value));
-    }
-    node.append(...children.flat().filter((child) => child != null && child !== false));
-    return node;
-  };
 
   const errorText = (error) => String(error?.message ?? error).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
 
@@ -72,7 +57,7 @@ if (!window.__t3extManager) {
           "Remove",
         );
     const openPanel =
-      extension.enabled && typeof panels().get(extension.id) === "function"
+      extension.enabled && typeof ext.manager.panelOf(extension.id) === "function"
         ? el("button", { type: "button", className: "t3ext-button t3ext-settings-button", onClick: () => openSettings(extension) }, "Settings")
         : null;
     return el(
@@ -129,7 +114,7 @@ if (!window.__t3extManager) {
 
   // The settings view replaces the list in the same dialog, so the focus trap and Escape keep working.
   function openSettings(extension) {
-    const renderPanel = panels().get(extension.id);
+    const renderPanel = ext.manager.panelOf(extension.id);
     if (typeof renderPanel !== "function") return;
     closeSettings(false);
     const dialog = overlay.querySelector(".t3ext-dialog");
@@ -179,35 +164,13 @@ if (!window.__t3extManager) {
     if (refocus) (overlay.querySelector(`[data-extension-id="${CSS.escape(id)}"] .t3ext-settings-button`) ?? dialog).focus();
   }
 
-  function close() {
-    closeSettings(false);
-    overlay.remove();
-    window.removeEventListener("keydown", onKeydown, true);
-    if (opener?.isConnected) opener.focus();
-    opener = null;
-  }
+  const close = () => modal?.close(true);
 
-  // Window capture phase: the modal gets Escape and Tab even if focus slipped behind it,
-  // and T3's own shortcuts do not see them while it is open.
-  function onKeydown(event) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      if (settings) closeSettings(true);
-      else close();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const dialog = overlay.querySelector(".t3ext-dialog");
-    const focusable = [...dialog.querySelectorAll(FOCUSABLE)].filter((node) => !node.closest("[hidden]"));
-    if (focusable.length === 0) return;
-    const active = document.activeElement;
-    const inside = active !== dialog && dialog.contains(active);
-    const edge = event.shiftKey ? focusable[0] : focusable.at(-1);
-    if (!inside || active === edge) {
-      event.preventDefault();
-      (event.shiftKey ? focusable.at(-1) : focusable[0]).focus();
-    }
+  // Escape in a settings panel goes back to the list; the layer handles the rest.
+  function onKey(event) {
+    if (event.key !== "Escape" || !settings) return;
+    event.preventDefault();
+    closeSettings(true);
   }
 
   function build() {
@@ -252,14 +215,11 @@ if (!window.__t3extManager) {
   async function open(settingsId) {
     if (!api) return;
     overlay ??= build();
-    if (!overlay.isConnected) {
-      opener = document.activeElement;
-      document.body.append(overlay);
-      window.addEventListener("keydown", onKeydown, true);
-    }
+    // Panels handle their own keys, so keys still reach them; T3 sees only the ones handled here.
+    if (!modal) modal = layer(overlay, { modal: true, isolate: false, onKey, onClose: () => ((modal = null), closeSettings(false)) });
     await render();
     const target = typeof settingsId === "string" ? extensions.find((extension) => extension.id === settingsId) : null;
-    if (target?.enabled && typeof panels().get(target.id) === "function") return openSettings(target);
+    if (target?.enabled && typeof ext.manager.panelOf(target.id) === "function") return openSettings(target);
     closeSettings(false);
     overlay.querySelector(".t3ext-dialog").focus();
   }
@@ -305,6 +265,6 @@ if (!window.__t3extManager) {
   };
   new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true });
   window.addEventListener("hashchange", schedule);
-  window.addEventListener("t3ext:manage", (event) => open(event.detail?.settings));
+  ext.manager.serve(open);
   schedule();
 }

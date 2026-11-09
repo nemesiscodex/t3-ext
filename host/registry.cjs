@@ -222,4 +222,4 @@ function isSymlink(p) {
   }
 }
 
-module.exports = { createRegistry, parseManifest, t3Home, PARTS };
+module.exports = { createRegistry, PARTS };

@@ -1,4 +1,4 @@
-if (!window.t3SettleBoom) {
+{
   // Effect Institute's look: off-white ink on black, a dot grid, thin rings, glitch glyphs, and
   // the occasional "small greenish square". The sounds follow its Tone.js voices.
   const INK = "241, 239, 232";
@@ -10,7 +10,6 @@ if (!window.t3SettleBoom) {
   const CHARGE = 420;
   const MUTED_KEY = "t3ext.settle-boom.muted";
   const OFF_KEY = "t3ext.settle-boom.off";
-  const ROW = "[data-thread-item]";
   const SURFACE = '[data-testid^="sidebar-row-"]';
   const CARD = '[data-testid="sidebar-row-card"]';
   const WOKE = '[aria-label="Dismiss Woke notification"]';
@@ -74,7 +73,7 @@ if (!window.t3SettleBoom) {
       dedupe: PLAYED_MS,
       duration: 1300,
       // A pending request ends a snooze early in T3; the wait effect already says so.
-      skip: (threadId) => !!records.get(threadId)?.shell?.pendingRuntimeRequest,
+      skip: (threadId) => !!threads.get(threadId)?.pendingRuntimeRequest,
       label: () => ({ word: "WOKE", square: "--warning" }),
       setup: (scene) => ({ animations: scene.calm || !scene.surface ? [] : [spring(scene.surface)] }),
       draw: drawWake,
@@ -128,11 +127,10 @@ if (!window.t3SettleBoom) {
 
   // --- Which thread, and where ----------------------------------------------------------------
 
-  // A row's data-thread-item is "<environmentId>:<threadId>", and a thread id can hold colons
-  // itself ("mcp:<uuid>"). Settled threads keep theirs in the Settled section further down, so
-  // the active row is the first match.
-  const threadIdOf = (row) => row.getAttribute("data-thread-item").replace(/^[^:]*:/, "");
-  const rowsFor = (threadId) => [...document.querySelectorAll(ROW)].filter((row) => threadIdOf(row) === threadId);
+  // Settled threads keep a row in the Settled section further down, so the active row is the
+  // first match.
+  const threads = ext.t3.threads;
+  const rowsFor = (threadId) => ext.t3.threadRows(threadId).map((row) => row.element);
   const rowFor = (threadId) => rowsFor(threadId)[0];
 
   const backgroundOf = (node) => {
@@ -208,25 +206,6 @@ if (!window.t3SettleBoom) {
     look();
   }
 
-  // A DOM node can still point at the fiber of the previous render, whose props are stale. The
-  // one whose root is the root's `current` is the live one.
-  function fiberOf(node) {
-    const key = node && Object.keys(node).find((name) => name.startsWith("__reactFiber$"));
-    const fiber = key && node[key];
-    if (!fiber) return null;
-    let top = fiber;
-    while (top.return) top = top.return;
-    return top.stateNode?.current === top ? fiber : (fiber.alternate ?? fiber);
-  }
-
-  // The props of T3's SidebarThreadRow above a row's element.
-  function rowProps(row) {
-    for (let fiber = fiberOf(row), i = 0; fiber && i < 12; fiber = fiber.return, i++) {
-      if (fiber.memoizedProps && "wokeAt" in fiber.memoizedProps) return fiber.memoizedProps;
-    }
-    return null;
-  }
-
   // --- Playing a change ------------------------------------------------------------------------
 
   const played = new Map();
@@ -240,7 +219,7 @@ if (!window.t3SettleBoom) {
   // only the most important one plays. `held` marks a fresh Settle press, which is never a repeat.
   function fire(event, threadId, details = {}) {
     const effect = EFFECTS[event];
-    if (!threadId || offList().includes(event) || isSubagent(threadId) || effect.skip?.(threadId, details)) return null;
+    if (!threadId || offList().includes(event) || threads.isSubagent(threads.get(threadId)) || effect.skip?.(threadId, details)) return null;
     const now = Date.now();
     const key = `${event}:${threadId}`;
     if (!details.held && now - (played.get(key) ?? -Infinity) < (effect.dedupe ?? 0)) return null;
@@ -388,7 +367,7 @@ if (!window.t3SettleBoom) {
         const slide = scene.calm ? 0 : 220;
         for (const item of items) {
           const was = tops.get(item);
-          const hide = was === undefined || (item.matches(ROW) && leaving.has(threadIdOf(item)));
+          const hide = was === undefined || (ext.t3.rowOf(item)?.element === item && leaving.has(ext.t3.rowOf(item).threadId));
           const shift = was === undefined ? 0 : was - item.offsetTop;
           if (!hide && !shift) continue;
           const held = { transform: `translateY(${shift}px)`, opacity: hide ? 0 : 1 };
@@ -410,7 +389,7 @@ if (!window.t3SettleBoom) {
   let replaying = false;
 
   const settleButtonIn = (row) => [...(row?.querySelectorAll("button") ?? [])].find((button) => button.textContent.trim() === "Settle");
-  const openThreadId = () => location.hash.split("/").pop(); // "#/<environmentId>/<threadId>"
+  const openThreadId = () => ext.t3.openThread()?.threadId ?? null;
 
   // If the effect cannot start, the event goes on to T3 untouched.
   function hold(event, threadId, replay) {
@@ -449,9 +428,9 @@ if (!window.t3SettleBoom) {
     (event) => {
       if (replaying || !event.isTrusted) return;
       const button = event.target instanceof Element ? event.target.closest("button") : null;
-      const row = button?.closest(ROW);
+      const row = ext.t3.rowOf(button);
       if (!row || button.textContent.trim() !== "Settle") return;
-      const threadId = threadIdOf(row);
+      const { threadId } = row;
       hold(event, threadId, () => (button.isConnected ? button : settleButtonIn(rowFor(threadId)))?.click());
     },
     true,
@@ -478,61 +457,21 @@ if (!window.t3SettleBoom) {
 
   // --- What T3 says ----------------------------------------------------------------------------
 
-  // The server pushes a `thread.updated` message with the whole thread shell after every change,
-  // with no event type, so changes are found by comparing shells. Per thread this keeps the last
-  // shell and the last key each change had. A change plays when its key is new and it happened
-  // after this page loaded, within the last 30 seconds. When T3 subscribes again after a
-  // reconnect, the server replays what changed while it was away until `{kind: "synchronized"}`;
-  // those only set the keys. The first subscription goes out before this script loads, so the
-  // page-load check covers it. Snapshots are not a marker: the server also sends one whenever a
-  // project's repository details refresh.
+  // The server pushes the whole thread shell after every change, with no event type, so changes
+  // are found by comparing shells. Per thread this keeps the last shell and the last key each
+  // change had. A change plays when its key is new and it happened after this page loaded,
+  // within the last 30 seconds. Replays after a reconnect only set the keys.
   const records = new Map();
-  const replayingRequests = new Set();
-  const ACTIVE_RUN = ["preparing", "queued", "starting", "running", "waiting"];
-
-  const isSubagentShell = (shell) => shell?.lineage?.relationshipToParent === "subagent";
-  const isSubagent = (threadId) => isSubagentShell(records.get(threadId)?.shell);
   const fresh = (at) => {
     const time = Date.parse(at ?? "");
     return time >= performance.timeOrigin && Date.now() - time < FRESH_MS;
   };
 
-  // T3's own reading of a raw shell: shellRuntime and presentThreadShell in client-runtime's
-  // models.ts, resolveSidebarThreadStatus in Sidebar.logic.ts, subagentRequest in threadShell.ts.
-  function runtimeOf(shell) {
-    const parked = (shell.pendingBackgroundTasks ?? []).some((task) => task.kind !== "command") && shell.status !== "failed";
-    if (shell.latestRunId === null && shell.activeProviderThreadId === null && !parked) return null;
-    return parked ? "idle" : (shell.activityRunStatus ?? shell.status);
-  }
-
-  // "approval", "input", or null when the pending request waits on nobody: a question the run
-  // keeps working past, or a subagent's after its run ended. A provider's own subagents ask on
-  // the parent's shell.
-  function asks(shell) {
-    const request = shell.pendingRuntimeRequest;
-    if (!request || request.kind === "auth_refresh") return null;
-    const kind = request.kind === "user_input" ? "input" : "approval";
-    if (isSubagentShell(shell)) {
-      const live = shell.activityRunStatus !== undefined ? shell.activityRunStatus !== null : ACTIVE_RUN.includes(shell.status);
-      return shell.creationSource !== "provider" && live ? kind : null;
-    }
-    if (kind === "input" && request.blocking === false && ["preparing", "starting", "running"].includes(runtimeOf(shell))) return null;
-    return kind;
-  }
-
-  function statusOf(shell) {
-    if (asks(shell)) return "needs-you";
-    const runtime = runtimeOf(shell);
-    if (runtime === "running" && shell.blockedOnThreadWait) return "waiting";
-    if (ACTIVE_RUN.includes(runtime)) return "working";
-    return runtime === "idle" || runtime === "failed" ? runtime : "ready";
-  }
-
   // What each change keys on in a shell, and when it happened, most important first.
   const CHANGES = {
     settle: (shell) => ({ key: shell.settledAt, at: shell.settledAt }),
     wait: (shell) => {
-      const kind = asks(shell);
+      const kind = threads.asks(shell);
       const request = shell.pendingRuntimeRequest;
       // A question that stops being one the run works past starts waiting now, not when asked.
       return { key: kind && request.id, at: request?.blocking === false ? shell.updatedAt : request?.createdAt, kind };
@@ -546,11 +485,11 @@ if (!window.t3SettleBoom) {
     // A run you stopped is not done, as in T3's own notifications. Background work can hold a
     // completed run back for a while; then it is done when the hold ends, not when the run ended.
     done: (shell, prior) => {
-      const completed = (shell.status === "completed" || shell.status === "idle") && !shell.latestRunStopRequested && statusOf(shell) === "ready";
-      return { key: completed ? shell.latestRunCompletedAt : null, at: prior && statusOf(prior) !== "ready" ? shell.updatedAt : shell.latestRunCompletedAt };
+      const completed = (shell.status === "completed" || shell.status === "idle") && !shell.latestRunStopRequested && threads.status(shell) === "ready";
+      return { key: completed ? shell.latestRunCompletedAt : null, at: prior && threads.status(prior) !== "ready" ? shell.updatedAt : shell.latestRunCompletedAt };
     },
     start: (shell) => ({
-      key: statusOf(shell) === "working" ? shell.latestRunId : null,
+      key: threads.status(shell) === "working" ? shell.latestRunId : null,
       at: shell.activityRunStartedAt ?? shell.latestRunStartedAt ?? shell.latestRunRequestedAt ?? shell.updatedAt,
     }),
     snooze: (shell) => ({ key: shell.snoozedUntil ? shell.snoozedAt : null, at: shell.snoozedAt, until: shell.snoozedUntil }),
@@ -558,82 +497,33 @@ if (!window.t3SettleBoom) {
 
   const recordFor = (threadId) => records.get(threadId) ?? records.set(threadId, { shell: null, keys: {} }).get(threadId);
 
-  // A subagent's question shows on the row of its first ancestor that is not a subagent.
-  function rowOwner(shell) {
-    let id = shell.id;
-    for (let at = shell, i = 0; isSubagentShell(at) && i < 20; i++) {
-      id = at.lineage.parentThreadId ?? id;
-      at = records.get(id)?.shell;
-    }
-    return id;
-  }
-
   function observe(shell, live) {
     const record = recordFor(shell.id);
     const prior = record.shell;
     record.shell = shell;
     const quiet = !live || shell.archivedAt || shell.deletedAt;
-    const owner = isSubagentShell(shell) ? rowOwner(shell) : shell.id;
+    const owner = threads.owner(shell);
     for (const [event, change] of Object.entries(CHANGES)) {
       const { key, at, ...details } = change(shell, prior);
       if (key == null || key === record.keys[event]) continue;
       record.keys[event] = key;
       if (quiet || !fresh(at) || (owner !== shell.id && event !== "wait")) continue;
-      fire(event, owner, { title: records.get(owner)?.shell?.title, ...details });
+      fire(event, owner, { title: threads.get(owner)?.title, ...details });
     }
   }
 
   // Settling, snoozing and waking are optimistic: T3 moves the row right after it sends the
-  // command, so the copy of the row is taken here, before the send. Other windows, agents and auto-settle
-  // only show in the server's pushes, read before T3 handles them. The socket opened before this
-  // script ran, so both hooks sit on prototypes. They run inside T3's own code, so they must
-  // never throw.
-  const onSend = guard((text) => {
-    for (const message of [JSON.parse(text)].flat()) {
-      if (SUBSCRIBE.test(message?.tag ?? "")) replayingRequests.add(String(message.id));
-      const command = message?.payload;
-      if (command?.type === "thread.settle") fire("settle", command.threadId);
-      else if (command?.type === "thread.snooze") fire("snooze", command.threadId, { until: command.snoozedUntil });
-      else if (command?.type === "thread.unsnooze") fire("wake", command.threadId, { timer: false });
+  // command, so the copy of the row is taken here, before the send. Other windows, agents and
+  // auto-settle only show in the server's pushes, read before T3 handles them.
+  threads.subscribe((event) => {
+    if (event.kind === "updated") observe(event.shell, event.live);
+    else if (event.kind === "removed") records.delete(event.threadId);
+    else if (event.kind === "command") {
+      const { command } = event;
+      if (command.type === "thread.settle") fire("settle", command.threadId);
+      else if (command.type === "thread.snooze") fire("snooze", command.threadId, { until: command.snoozedUntil });
+      else if (command.type === "thread.unsnooze") fire("wake", command.threadId, { timer: false });
     }
-  });
-
-  // One bad value must not leave the rest of its frame unread.
-  const observeSafely = guard(observe);
-
-  const onFrame = guard((text) => {
-    for (const message of [JSON.parse(text)].flat()) {
-      if (message?._tag !== "Chunk" || !Array.isArray(message.values)) continue;
-      const requestId = String(message.requestId);
-      for (const value of message.values) {
-        if (value?.kind === "synchronized") replayingRequests.delete(requestId);
-        else if (value?.kind === "thread.updated" && value.thread?.id) observeSafely(value.thread, !replayingRequests.has(requestId));
-        else if (value?.kind === "thread.removed") records.delete(value.threadId);
-      }
-    }
-  });
-
-  const SUBSCRIBE = /^orchestration\.subscribe(Archived)?Shell$/;
-  const SENT = /"type":"thread\.(settle|snooze|unsnooze)"|"tag":"orchestration\.subscribe(Archived)?Shell"/;
-  const FRAME = /"kind":"(thread\.|synchronized")/;
-  const send = WebSocket.prototype.send;
-  WebSocket.prototype.send = function (payload) {
-    if (typeof payload === "string" && SENT.test(payload)) onSend(payload);
-    return send.call(this, payload);
-  };
-
-  const data = Object.getOwnPropertyDescriptor(MessageEvent.prototype, "data");
-  const inspected = new WeakSet();
-  Object.defineProperty(MessageEvent.prototype, "data", {
-    ...data,
-    get() {
-      const value = data.get.call(this);
-      if (typeof value === "string" && !inspected.has(this) && this.target instanceof WebSocket) {
-        inspected.add(this);
-        if (FRAME.test(value)) onFrame(value);
-      }
-      return value;
-    },
   });
 
   // A snooze that runs out ends in T3's sidebar, on a timer; the server sends nothing. The woken
@@ -643,13 +533,13 @@ if (!window.t3SettleBoom) {
       for (const node of mutation.addedNodes) {
         if (!(node instanceof Element)) continue;
         for (const button of node.matches(WOKE) ? [node] : node.querySelectorAll(WOKE)) {
-          const row = button.closest(ROW);
-          const wokeAt = row && rowProps(row)?.wokeAt;
+          const row = ext.t3.rowOf(button);
+          const wokeAt = row && ext.t3.rowData(row.element)?.wokeAt;
           if (!wokeAt || !fresh(wokeAt)) continue;
-          const record = recordFor(threadIdOf(row));
+          const record = recordFor(row.threadId);
           if (record.keys.wake === wokeAt) continue;
           record.keys.wake = wokeAt;
-          fire("wake", threadIdOf(row), { timer: true });
+          fire("wake", row.threadId, { timer: true });
         }
       }
     }

@@ -19,6 +19,8 @@ const DOCS = path.join(ROOT, "docs");
 const SHOTS = path.join(os.tmpdir(), "t3ext-e2e-shots");
 const keep = process.argv.includes("--keep");
 const LONG_ID = "longextensionfolder".repeat(5);
+const EXAMPLES = ["project-groups", "settle-boom", "streaming-mode", "thread-doom"];
+const ran = (id) => `window[Symbol.for("t3ext.page")]?.ran(${JSON.stringify(id)}) === true`;
 
 const step = (message) => console.log(`ok - ${message}`);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -182,6 +184,18 @@ async function main() {
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"), "utf8")).config, {}, "null deleted the entry on disk");
     await assert.rejects(page.evaluate(`window.t3ext.setConfig("nope", 1)`), /No extension with id "nope"/);
     step("config round-trips through the real preload; onConfigChange hears the change, then stops; unknown ids are refused");
+    const viaExt = await page.evaluate(`(async () => {
+      const { config } = window.__t3extSample.ext;
+      const heard = [];
+      const stop = config.subscribe((value) => heard.push(value));
+      await Promise.all([config.update(() => ({ n: 1 })), config.update((value) => ({ n: value.n + 1 }))]);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      stop();
+      await config.update(() => null);
+      return heard;
+    })()`);
+    assert.deepEqual(viaExt, [null, { n: 1 }, { n: 2 }]);
+    step("ext.config: writes queue in order, and the extension hears each saved value once, its own broadcast included");
 
     const exe = path.join(app, "Contents", "MacOS", path.basename(app, ".app"));
     const again = execFileSync(exe, [CLI, "launch", "--app", app], { encoding: "utf8", env: { ...openEnv, ELECTRON_RUN_AS_NODE: "1", HOME: fakeHome } });
@@ -237,22 +251,25 @@ async function main() {
     fs.mkdirSync(path.join(fixture(extensionsDir, "a-dir-renderer", { name: "Directory renderer" }), "renderer.js"));
     const unreadable = path.join(fixture(extensionsDir, "a-unreadable", { name: "Unreadable renderer" }, { "renderer.js": "window.__t3extUnreadable = true;" }), "renderer.js");
     fs.chmodSync(unreadable, 0);
+    fixture(extensionsDir, "a-throws", { name: "Throws while loading" }, { "renderer.js": 'throw new Error("boom while loading");' });
     fixture(extensionsDir, LONG_ID, { name: "VeryLongExtensionName".repeat(9), version: "1.0.0", description: "VeryLongDescription".repeat(25) });
     await page.evaluate("location.reload()");
     await sleep(1000);
-    await evaluateUntil(page, "the sample renderer, listed after two failing extensions", "document.readyState === 'complete' && window.__t3extManager === true && !!window.__t3extSample");
+    await evaluateUntil(page, "the sample renderer, listed after three failing extensions", `document.readyState === 'complete' && ${ran("builtin:extension-manager")} && !!window.__t3extSample`);
     assert.equal(await page.evaluate("window.__t3extUnreadable"), undefined, "the unreadable renderer did not run");
     const errors = await page.evaluate("window.t3ext.list().then((list) => Object.fromEntries(list.map((e) => [e.id, e.error])))");
     assert.equal(errors["a-dir-renderer"], "renderer.js is not a file");
     assert.match(errors["a-unreadable"], /^renderer\.js: EACCES/);
+    assert.equal(errors["a-throws"], "renderer.js: boom while loading");
     assert.equal(errors.sample, null);
-    step(`a directory named renderer.js and an unreadable renderer.js do not stop later extensions; errors ${JSON.stringify([errors["a-dir-renderer"], errors["a-unreadable"].slice(0, 30)])}`);
+    step(`a directory named renderer.js, an unreadable one and one that throws do not stop later extensions; errors ${JSON.stringify([errors["a-dir-renderer"], errors["a-unreadable"].slice(0, 30), errors["a-throws"]])}`);
 
     await page.evaluate(`document.querySelector("[data-t3ext-nav] button").focus()`);
     await press(page, "Enter");
-    await evaluateUntil(page, "the manager opened from the keyboard", `document.querySelectorAll("[data-t3ext-manager] .t3ext-row").length === 5`);
+    await evaluateUntil(page, "the manager opened from the keyboard", `document.querySelectorAll("[data-t3ext-manager] .t3ext-row").length === 6`);
     assert.match(await page.evaluate(`document.querySelector('[data-extension-id="a-dir-renderer"] .t3ext-error').textContent`), /renderer\.js is not a file/);
-    step("the manager shows the directory renderer's error");
+    assert.equal(await page.evaluate(`document.querySelector('[data-extension-id="a-throws"] .t3ext-error').textContent`), "renderer.js: boom while loading");
+    step("the manager shows the directory renderer's error, and the error a renderer threw while loading");
     let focus = await page.evaluate(FOCUS_STATE);
     assert.equal(focus.inside, true, "opening moves focus into the dialog");
     await page.evaluate(focusButton(0));
@@ -296,7 +313,7 @@ async function main() {
     await page.evaluate(`document.querySelector('[aria-label="Use light mode"]').click()`);
     await evaluateUntil(page, "the light theme", `!document.documentElement.classList.contains("dark")`);
     await press(page, "Enter");
-    await evaluateUntil(page, "the manager reopened", `document.querySelectorAll("[data-t3ext-manager] .t3ext-row").length === 5`);
+    await evaluateUntil(page, "the manager reopened", `document.querySelectorAll("[data-t3ext-manager] .t3ext-row").length === 6`);
     await sleep(300);
     const normal = await page.evaluate(LAYOUT_PROBLEMS);
     assert.deepEqual(normal.problems, [], `layout at ${normal.viewport}px`);
@@ -311,12 +328,46 @@ async function main() {
     step(`long names wrap without touching the controls at ${normal.viewport}px (row ${normal.scrollWidth}/${normal.clientWidth}) and 500px (row ${narrow.scrollWidth}/${narrow.clientWidth}); screenshots in ${SHOTS}`);
     await page.evaluate(`document.querySelector("[data-t3ext-manager] .t3ext-close").click()`);
 
+    assert.equal(await page.evaluate("window.__t3extSample.ext.settings.open()"), true);
+    await evaluateUntil(page, "the sample's settings panel", `document.querySelector('[data-t3ext-manager] [data-t3ext-settings="sample"] .sample-panel')?.textContent === "Sample settings"`);
+    await press(page, "Escape");
+    await evaluateUntil(page, "the extension list again", `!document.querySelector("[data-t3ext-settings]") && !!document.querySelector("[data-t3ext-manager] .t3ext-list")?.offsetParent`);
+    await press(page, "Escape");
+    assert.equal(await page.evaluate(`!!document.querySelector("[data-t3ext-manager]")`), false);
+    step("ext.settings.open() opens the sample's panel in the manager; Escape goes back to the list, then closes it");
+
+    const extensionsDirAgain = path.join(home, "extensions");
+    for (const name of EXAMPLES) fs.symlinkSync(path.join(ROOT, "examples", name), path.join(extensionsDirAgain, name));
+    await page.send("Runtime.enable");
+    page.events.length = 0;
+    await page.evaluate("location.reload()");
+    await sleep(1000);
+    await evaluateUntil(page, "the four examples", `document.readyState === 'complete' && ${EXAMPLES.map(ran).join(" && ")}`);
+    await page.evaluate('location.hash = "#/"');
+    await sleep(3000);
+    const exampleErrors = await page.evaluate(`window.t3ext.list().then((list) => Object.fromEntries(list.filter((e) => ${JSON.stringify(EXAMPLES)}.includes(e.id)).map((e) => [e.id, e.error])))`);
+    assert.deepEqual(exampleErrors, Object.fromEntries(EXAMPLES.map((id) => [id, null])));
+    const tags = ["[t3ext]", ...EXAMPLES.map((id) => `[${id}]`)];
+    const logged = page.events
+      .filter((event) => event.method === "Runtime.exceptionThrown" || (event.method === "Runtime.consoleAPICalled" && ["error", "warning"].includes(event.params.type)))
+      .map((event) => event.params.exceptionDetails?.exception?.description ?? event.params.args?.map((arg) => arg.value ?? arg.description).join(" "))
+      .map(String)
+      .filter((text) => (tags.some((tag) => text.includes(tag)) || text.includes("t3ext/")) && !text.includes("a-throws"));
+    assert.deepEqual(logged, [], "no example logged an error or a warning");
+    const contract = await page.evaluate(`(() => {
+      const { t3 } = window.__t3extSample.ext;
+      const button = t3.filterButton();
+      return { button: !!button, projects: button ? Array.isArray(t3.projects()) : null, filter: button ? !!t3.projectFilter() : null, rows: t3.threadRows().length };
+    })()`);
+    if (contract.button) assert.deepEqual([contract.projects, contract.filter], [true, true], "page.js finds T3's project catalog and filter from the filter button");
+    step(`the four examples load in the clone with no errors or warnings; page.js reads T3: ${JSON.stringify(contract)}`);
+
     await page.evaluate(`window.t3ext.setEnabled("sample", false)`);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"), "utf8")), { disabled: ["sample"], config: {} });
     step("setEnabled('sample', false) persisted to extensions.json");
     await page.evaluate("location.reload()");
     await sleep(1000);
-    await evaluateUntil(page, "the reloaded page with the manager", "document.readyState === 'complete' && window.__t3extManager === true");
+    await evaluateUntil(page, "the reloaded page with the manager", `document.readyState === 'complete' && ${ran("builtin:extension-manager")}`);
     assert.equal(await page.evaluate("window.__t3extSample === undefined"), true, "sample renderer.js no longer runs");
     assert.equal(await page.evaluate(`getComputedStyle(document.documentElement).getPropertyValue("--t3ext-sample").trim()`), "");
     step("after reload the disabled sample's renderer and style are gone, the manager still loads");

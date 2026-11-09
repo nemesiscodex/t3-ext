@@ -1,7 +1,6 @@
-if (!window.t3ProjectGroups) {
+{
   const STORAGE_KEY = "t3ext.project-groups";
   const LOG = "[project-groups]";
-  const TRIGGER = 'button[data-slot="combobox-trigger"][aria-label^="Filter threads by project"]';
   const SVG_NS = "http://www.w3.org/2000/svg";
   const DEFAULT_ICON = { kind: "lucide", name: "layers-3" };
   const EMOJI = ["💻", "🛠️", "🚀", "🤖", "✨", "⚡", "🌐", "📱", "🖥️", "⌨️", "⚙️", "🗄️", "☁️", "📦", "📚", "🧪", "🔒", "🎮", "🎵", "🎬", "🖼️", "🛍️", "🔥", "💡", "🧩", "📊", "🧠", "🦄", "🐙", "🌱"];
@@ -83,21 +82,6 @@ if (!window.t3ProjectGroups) {
 
   // --- Reading T3 -------------------------------------------------------------------------------
 
-  // A DOM node can still point at the fiber of the previous render, whose props are stale. The
-  // one whose root is the root's `current` is the live one.
-  function fiberOf(node) {
-    const key = node && Object.keys(node).find((name) => name.startsWith("__reactFiber$"));
-    const fiber = key && node[key];
-    if (!fiber) return null;
-    let top = fiber;
-    while (top.return) top = top.return;
-    return top.stateNode?.current === top ? fiber : (fiber.alternate ?? fiber);
-  }
-
-  function* ancestors(fiber, limit) {
-    for (let i = 0; fiber && i < limit; i++, fiber = fiber.return) yield fiber;
-  }
-
   // Project favicons from the cache T3 keeps in IndexedDB, keyed like T3 keys them:
   // JSON [environmentId, workspaceRoot, faviconPath]. T3 fills it as it loads each favicon.
   let favicons = new Map();
@@ -122,55 +106,30 @@ if (!window.t3ProjectGroups) {
     };
   }
 
-  // T3 keeps its filter in a zustand store as `sidebarProjectScopeKeys`: T3's project keys, [] for
-  // all projects. zustand's hook passes [store, selector] as a useCallback's deps, so the store is
-  // in the hooks of the sidebar component that reads it.
-  function scopeStoreOf(fiber) {
-    for (let hook = fiber.memoizedState; hook && typeof hook === "object" && "next" in hook; hook = hook.next) {
-      const deps = Array.isArray(hook.memoizedState) ? hook.memoizedState[1] : null;
-      const store = Array.isArray(deps) ? deps[0] : null;
-      if (typeof store?.getState === "function" && typeof store.getState()?.setSidebarProjectScopeKeys === "function") return store;
-    }
-    return null;
-  }
-
-  // T3's scope picker (`items`, `onValueChange`), the store holding its filter, and the sidebar's
-  // memoized project catalog, which knows the member projects of each scope item. Null when any
+  // T3's project filter button, its filter, and its projects with their favicons. Null when any
   // is missing.
   function readT3() {
-    const trigger = document.querySelector(TRIGGER);
-    let combobox = null;
-    let scope = null;
-    let catalog = null;
-    for (const fiber of ancestors(fiberOf(trigger), 80)) {
-      const props = fiber.memoizedProps;
-      if (!combobox && Array.isArray(props?.items) && typeof props.onValueChange === "function") combobox = props;
-      scope ??= scopeStoreOf(fiber);
-      for (const cached of fiber.updateQueue?.memoCache?.data ?? []) {
-        for (const value of Array.isArray(cached) ? cached : []) {
-          if (!catalog && Array.isArray(value?.projectGroups) && Array.isArray(value.projectScopeItems)) catalog = value;
-        }
-      }
-      if (combobox && scope && catalog) break;
-    }
+    const trigger = ext.t3.filterButton();
     if (!trigger) return null;
-    if (!combobox || !scope || !catalog) {
-      failOpen(`could not find T3's ${!combobox ? "project filter" : !scope ? "project filter store" : "project catalog"}; leaving T3's filter alone`);
+    const filter = ext.t3.projectFilter();
+    const catalog = ext.t3.projects();
+    if (!filter || !catalog) {
+      failOpen(`could not find T3's ${!filter ? "project filter" : "project catalog"}; leaving T3's filter alone`);
       return null;
     }
-    const projects = catalog.projectGroups.map((project) => ({
-      key: project.projectKey,
-      name: project.displayName,
-      icon: project.projectIcon,
-      favicon: favicons.get(JSON.stringify([project.environmentId, project.workspaceRoot, project.faviconPath || null])) ?? null,
-      refs: project.memberProjectRefs.map((ref) => `${ref.environmentId}:${ref.projectId}`),
+    const projects = catalog.map((project) => ({
+      key: project.key,
+      name: project.name,
+      icon: project.icon,
+      favicon: favicons.get(JSON.stringify([project.environmentId, project.workspaceRoot, project.faviconPath])) ?? null,
+      refs: project.refs,
     }));
-    return { trigger, combobox, scope, projects };
+    return { trigger, filter, projects };
   }
 
   // T3's router, from the route match components above the sidebar. Null when it is missing.
   function routerOf() {
-    for (const fiber of ancestors(fiberOf(document.querySelector(TRIGGER)), Infinity)) {
+    for (let fiber = ext.t3.fiberOf(ext.t3.filterButton()); fiber; fiber = fiber.return) {
       const router = fiber.memoizedProps?.router;
       if (typeof router?.navigate === "function") return router;
     }
@@ -212,19 +171,7 @@ if (!window.t3ProjectGroups) {
     closePopover(false);
   }
 
-  // T3's handler reads the details Base UI passes as the second argument (a shift-click adds a
-  // project instead of replacing the selection), so pass those of a plain click.
-  const changeDetails = () => ({ reason: "item-press", event: new Event("base-ui"), cancel() {}, isCanceled: false });
-  const scopeOf = (t3) => [...t3.scope.getState().sidebarProjectScopeKeys].sort().join("\n");
-
-  // T3's own handler first, as if the first project were picked in its menu: it also clears T3's
-  // thread selection and scrolls the list to the top. Then the whole set, which that handler can
-  // only build one shift-click and one render at a time.
-  function setScope(t3, keys) {
-    const first = t3.combobox.items.find((candidate) => candidate.value === (keys[0] ?? "all"));
-    if (first) t3.combobox.onValueChange(first, changeDetails());
-    t3.scope.getState().setSidebarProjectScopeKeys(keys);
-  }
+  const scopeOf = (t3) => t3.filter.keys().sort().join("\n");
 
   function apply() {
     const t3 = readT3();
@@ -242,7 +189,7 @@ if (!window.t3ProjectGroups) {
     const view = resolve(state, t3.projects);
     const want = [...view.keys].sort().join("\n");
     if (!followed && want !== seen && want !== synced?.want) {
-      setScope(t3, view.keys);
+      t3.filter.set(view.keys);
       seen = scopeOf(t3);
     }
     synced = { seen, want };
@@ -251,26 +198,12 @@ if (!window.t3ProjectGroups) {
 
   // --- Icons ------------------------------------------------------------------------------------
 
-  function h(tag, props = {}, ...children) {
-    const node = document.createElement(tag);
-    for (const [key, value] of Object.entries(props)) {
-      if (value == null || value === false) continue;
-      if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
-      else node.setAttribute(key === "className" ? "class" : key, value === true ? "" : value);
-    }
-    node.append(...children.flat().filter((child) => child != null && child !== false));
-    return node;
-  }
+  const h = ext.ui.el;
+  const lucide = (name) => ext.ui.icon(ICONS[name], "t3pg-icon");
 
   function svg(tag, attributes) {
     const node = document.createElementNS(SVG_NS, tag);
     for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
-    return node;
-  }
-
-  function lucide(name) {
-    const node = svg("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", class: "t3pg-icon" });
-    for (const [tag, attributes] of ICONS[name] ?? []) node.append(svg(tag, attributes));
     return node;
   }
 
@@ -351,7 +284,8 @@ if (!window.t3ProjectGroups) {
 
   // --- The popover ------------------------------------------------------------------------------
 
-  const popover = { element: null, list: null, search: null, query: "" };
+  // `element` is set while the popover is open, `layer` once it is on the page.
+  const popover = { element: null, layer: null, list: null, search: null, query: "" };
 
   function openPopover() {
     if (popover.element) return popover.search.focus();
@@ -370,29 +304,29 @@ if (!window.t3ProjectGroups) {
       h("div", { className: "t3pg-search" }, lucide("search"), popover.search),
       popover.list,
     );
-    document.body.append(popover.element);
     renderList();
-    place();
-    trigger.button.setAttribute("aria-expanded", "true");
+    if (!popover.element) return;
+    popover.layer = ext.ui.layer(popover.element, {
+      anchor: trigger.button,
+      place,
+      onKey: onPopoverKey,
+      onClose: () => Object.assign(popover, { element: null, layer: null }),
+    });
     popover.search.focus();
   }
 
   function closePopover(returnFocus) {
-    if (!popover.element) return;
-    popover.element.remove();
-    popover.element = null;
-    trigger.button.setAttribute("aria-expanded", "false");
-    if (returnFocus && trigger.button.isConnected) trigger.button.focus();
+    if (popover.layer) popover.layer.close(returnFocus);
+    else popover.element = null;
   }
 
   // Under the trigger, lined up with the sidebar like T3's own menu.
-  function place() {
+  function place(element) {
     const anchor = trigger.button.getBoundingClientRect();
     const sidebar = trigger.button.closest('[data-slot="sidebar-inner"]')?.getBoundingClientRect() ?? anchor;
-    const width = popover.element.offsetWidth;
-    popover.element.style.left = `${Math.max(8, Math.min(sidebar.left + 8, innerWidth - width - 8))}px`;
-    popover.element.style.top = `${anchor.bottom + 6}px`;
-    popover.element.style.maxHeight = `${Math.max(160, innerHeight - anchor.bottom - 22)}px`;
+    element.style.left = `${Math.max(8, Math.min(sidebar.left + 8, innerWidth - element.offsetWidth - 8))}px`;
+    element.style.top = `${anchor.bottom + 6}px`;
+    element.style.maxHeight = `${Math.max(160, innerHeight - anchor.bottom - 22)}px`;
   }
 
   function item({ key, role, checked, icon, label, detail, onclick, oncontextmenu, extra }) {
@@ -516,10 +450,7 @@ if (!window.t3ProjectGroups) {
     const items = [...popover.list.querySelectorAll("[data-key]")];
     const at = items.indexOf(document.activeElement?.closest("[data-key]"));
     const onEdit = document.activeElement?.classList.contains("t3pg-edit");
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closePopover(true);
-    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       const next = event.key === "ArrowDown" ? at + 1 : at - 1;
       (next < 0 ? popover.search : items[Math.min(next, items.length - 1)])?.focus();
@@ -540,33 +471,9 @@ if (!window.t3ProjectGroups) {
     }
   }
 
-  // T3 handles keys on window in the capture phase and swallows some of them, so our popover and
-  // dialog take their keys there first, and T3's shortcuts stay out of them.
-  addEventListener(
-    "keydown",
-    (event) => {
-      const handle = editor?.dialog.contains(event.target) ? editor.onKey : popover.element?.contains(event.target) ? onPopoverKey : null;
-      if (!handle) return;
-      event.stopImmediatePropagation();
-      handle(event);
-    },
-    true,
-  );
-
-  addEventListener(
-    "pointerdown",
-    (event) => {
-      if (!popover.element || popover.element.contains(event.target) || trigger.button.contains(event.target)) return;
-      closePopover(false);
-    },
-    true,
-  );
-
-  addEventListener("resize", () => popover.element && place());
-
   // --- The group editor -------------------------------------------------------------------------
 
-  let editor = null;
+  let editor = null; // { dialog, layer } while the editor is open
 
   function openEditor(group, preset = []) {
     const t3 = readT3();
@@ -579,7 +486,6 @@ if (!window.t3ProjectGroups) {
       tab: group?.icon.kind === "emoji" ? "emoji" : "lucide",
       confirmDelete: false,
     };
-    const restoreFocus = trigger.button;
     const title = group ? "Edit group" : "New group";
     const name = h("input", { type: "text", className: "t3pg-input", value: draft.name, placeholder: "Work, Clients, Side projects…", "aria-label": "Group name", autocomplete: "off", spellcheck: "false" });
     const preview = h("span", { className: "t3pg-preview", "aria-hidden": "true" });
@@ -629,13 +535,7 @@ if (!window.t3ProjectGroups) {
       if (remove) remove.textContent = draft.confirmDelete ? "Click again to delete" : "Delete";
     }
 
-    function close() {
-      editor?.backdrop.remove();
-      editor?.dialog.remove();
-      removeEventListener("focusin", keepFocus, true);
-      editor = null;
-      if (restoreFocus.isConnected) restoreFocus.focus();
-    }
+    const close = () => editor?.layer.close(true);
 
     function submit() {
       if (!valid()) return;
@@ -677,21 +577,12 @@ if (!window.t3ProjectGroups) {
         event.preventDefault();
         search.value = "";
         search.dispatchEvent(new Event("input"));
-      } else if (event.key === "Escape") {
-        event.preventDefault();
-        close();
       } else if (event.key === "Enter" && event.target === name) {
         event.preventDefault();
         submit();
       } else if (event.key === "Enter" && event.target === search) {
         event.preventDefault();
         visibleRows()[0]?.box.click();
-      } else if (event.key === "Tab") {
-        const focusable = [...dialog.querySelectorAll("button:not(:disabled), input")].filter((node) => !node.closest("[hidden]"));
-        const at = focusable.indexOf(document.activeElement);
-        const next = event.shiftKey ? (at <= 0 ? focusable.length - 1 : at - 1) : at === focusable.length - 1 ? 0 : at + 1;
-        event.preventDefault();
-        focusable[next].focus();
       }
     }
 
@@ -699,9 +590,19 @@ if (!window.t3ProjectGroups) {
       if (editor && !dialog.contains(event.target)) name.focus();
     }
 
-    editor = { dialog, backdrop, onKey };
     addEventListener("focusin", keepFocus, true);
-    document.body.append(backdrop, dialog);
+    editor = {
+      dialog,
+      layer: ext.ui.layer(h("div", { className: "t3pg-editor" }, backdrop, dialog), {
+        modal: true,
+        returnTo: trigger.button,
+        onKey,
+        onClose: () => {
+          removeEventListener("focusin", keepFocus, true);
+          editor = null;
+        },
+      }),
+    };
     refresh();
     // Keep the list's height while searching, so the centered dialog does not jump.
     checklist.style.minHeight = `${checklist.offsetHeight}px`;

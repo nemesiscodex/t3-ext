@@ -49,9 +49,9 @@ The last profile cannot be deleted. Deleting the active profile makes the first 
 
 ## How it knows
 
-**Projects come from T3's sidebar.** The extension reads the sidebar's memoized project list from the React fiber of T3's filter button (`aria-label` starting with "Filter threads by project"). Each project there carries T3's `repositoryIdentity`, which T3 takes from the `origin` remote, with the GitHub owner and name. A project's key is that `canonicalKey`, such as `github.com/owner/name`, in lower case. A project without a remote uses its folder path as its key.
+**Projects come from T3's sidebar.** The extension gets the sidebar's project list from `ext.t3.projects()`, which the host's [`page.js`](../../host/page.js) reads from the React fiber of T3's filter button (`aria-label` starting with "Filter threads by project"). Each project there carries T3's `repositoryIdentity`, which T3 takes from the `origin` remote, with the GitHub owner and name. A project's key is that `canonicalKey`, such as `github.com/owner/name`, in lower case. A project without a remote uses its folder path as its key.
 
-**Threads come from T3's sidebar rows.** Each thread row (`data-thread-item`) is rendered from props that hold the thread, with its title and branch, and its project. A thread's title and branch are blurred when its project is blurred. A thread outside any project is always blurred.
+**Threads come from T3's sidebar rows.** Each thread row (`data-thread-item`) is rendered from props that hold the thread, with its title and branch, and its project; `ext.t3.rowData()` reads them. A thread's title and branch are blurred when its project is blurred. A thread outside any project is always blurred.
 
 **Everything seen is kept.** The extension keeps every project and thread it has seen, with the texts it would blur, whether the active profile shows them or not. So a profile switch applies at once: the open thread's title in the chat header, and the breadcrumb while the sidebar is collapsed, follow the new profile. Projects that leave T3's list are dropped, with their threads.
 

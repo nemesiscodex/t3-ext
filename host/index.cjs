@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const electron = require("electron");
 const presence = require("./presence.cjs");
-const { createRegistry } = require("./registry.cjs");
+const { createRegistry, PARTS } = require("./registry.cjs");
 
 const { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, session, shell, webContents } = electron;
 const APP_SCHEME = "t3code:";
@@ -66,11 +66,11 @@ function loadMains(registry) {
   for (const extension of registry.list()) {
     if (!extension.enabled || !extension.parts.main || !extension.manifest) continue;
     const report = (error) => {
-      console.error(`[t3ext] ${extension.id}/main.js failed`, error);
-      registry.recordError(extension.id, "main.js", error?.stack ?? error);
+      console.error(`[t3ext] ${extension.id}/${PARTS.main} failed`, error);
+      registry.recordError(extension.id, PARTS.main, error?.stack ?? error);
     };
     try {
-      const exported = require(path.join(extension.dir, "main.js"));
+      const exported = require(path.join(extension.dir, PARTS.main));
       const activate = typeof exported === "function" ? exported : exported?.default;
       if (typeof activate === "function") {
         Promise.resolve(activate({ id: extension.id, dir: extension.dir, electron })).catch(report);
@@ -81,25 +81,37 @@ function loadMains(registry) {
   }
 }
 
+const PAGE = path.join(__dirname, "page.js");
+const PAGE_KEY = 'window[Symbol.for("t3ext.page")]';
+
+// Each renderer.js runs inside a function that page.js calls with its id and its `ext`. page.js
+// catches what it throws and returns the message, so the manager shows it.
 const PAGE_PARTS = [
-  { part: "style", file: "style.css", inject: (contents, _id, css) => contents.insertCSS(css) },
+  { part: "style", inject: (contents, _id, css) => contents.insertCSS(css) },
   {
     part: "renderer",
-    file: "renderer.js",
-    // `extensionId` is the folder name, which the user picks when they link the extension in.
     inject: (contents, id, code) =>
-      contents.executeJavaScript(
-        `((extensionId) => { try {\n${code}\n} catch (error) { console.error("[t3ext]", extensionId, error); } })(${JSON.stringify(id)});\n//# sourceURL=t3ext/${id.replace(":", "/")}/renderer.js`,
-      ),
+      contents
+        .executeJavaScript(
+          `${PAGE_KEY}.run(${JSON.stringify(id)}, (extensionId, ext) => {\n${code}\n});\n//# sourceURL=t3ext/${id.replace(":", "/")}/renderer.js`,
+        )
+        .then((error) => {
+          if (error) throw new Error(error);
+        }),
   },
 ];
 
-// Each part of each extension fails on its own; the rest still load.
+// page.js first: executeJavaScript calls run in order. Each part of each extension fails on its
+// own; the rest still load.
 function injectRenderers(registry, contents) {
+  contents
+    .executeJavaScript(`${fs.readFileSync(PAGE, "utf8")}\n//# sourceURL=t3ext/page.js`)
+    .catch((error) => console.error("[t3ext] page.js failed", error));
   for (const extension of registry.list()) {
     if (!extension.enabled || !extension.manifest) continue;
-    for (const { part, file, inject } of PAGE_PARTS) {
+    for (const { part, inject } of PAGE_PARTS) {
       if (!extension.parts[part]) continue;
+      const file = PARTS[part];
       const report = (error) => {
         console.error(`[t3ext] ${extension.id}/${file} failed`, error);
         registry.recordError(extension.id, file, error?.message ?? error);
@@ -224,7 +236,7 @@ function extensionsMenu(registry) {
 }
 
 function openManager(contents) {
-  contents.executeJavaScript('window.dispatchEvent(new CustomEvent("t3ext:manage"))').catch(() => {});
+  contents.executeJavaScript(`${PAGE_KEY}?.openManager()`).catch(() => {});
 }
 
 module.exports = { start };

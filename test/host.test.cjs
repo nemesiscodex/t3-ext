@@ -27,7 +27,8 @@ function fakeMenu(labels) {
   };
 }
 
-function fakeContents(url) {
+// With `context`, injected scripts run in it, as executeJavaScript runs them in the page.
+function fakeContents(url, context = null) {
   const contents = new EventEmitter();
   Object.assign(contents, {
     reloads: 0,
@@ -38,7 +39,10 @@ function fakeContents(url) {
     send: (...message) => contents.sent.push(message),
     reload: () => contents.reloads++,
     insertCSS: async (css) => contents.injected.push(["css", css]),
-    executeJavaScript: async (code) => contents.injected.push(["js", code]),
+    executeJavaScript: async (code) => {
+      contents.injected.push(["js", code]);
+      return context ? vm.runInContext(code, context) : undefined;
+    },
   });
   return contents;
 }
@@ -85,10 +89,17 @@ function fakeElectron({ ready, contents = [], menu = null }) {
 }
 
 // A fresh host module and start guard for each test, with `electron` resolving to the fake.
-function loadHost(t, electron) {
+// `extensions` adds folders next to the sample: { id: { "renderer.js": "..." } }.
+function loadHost(t, electron, extensions = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "t3ext-host-"));
   fs.mkdirSync(path.join(home, "extensions"));
   fs.symlinkSync(path.join(__dirname, "fixtures", "sample"), path.join(home, "extensions", "sample"));
+  for (const [id, files] of Object.entries(extensions)) {
+    const dir = path.join(home, "extensions", id);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ name: id }));
+    for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), text);
+  }
   const previousHome = process.env.T3CODE_HOME;
   process.env.T3CODE_HOME = home;
   const load = Module._load;
@@ -131,17 +142,37 @@ test("late start reloads only T3 windows, re-sets the menu with Extensions, and 
   assert.equal(JSON.parse(fs.readFileSync(path.join(home, "sample-main-ran.json"), "utf8")).pid, process.pid, "main.js ran");
 });
 
-test("each renderer.js runs with its own folder name as extensionId", async (t) => {
-  const appWindow = fakeContents("t3code://app/index.html");
+// A page with what page.js and the renderers need from it.
+function pageContext() {
+  const context = vm.createContext({ console, Date, t3ext: {}, addEventListener() {}, document: {}, location: { hash: "" } });
+  context.window = context;
+  return context;
+}
+
+test("each renderer.js runs with its own folder name as extensionId, and its ext", async (t) => {
+  const page = pageContext();
+  const appWindow = fakeContents("t3code://app/index.html", page);
   const { electron } = fakeElectron({ ready: true, contents: [appWindow] });
   const { host } = loadHost(t, electron);
   host.start();
   appWindow.emit("dom-ready");
   await new Promise((resolve) => setImmediate(resolve));
-  const [, code] = appWindow.injected.find(([kind, code]) => kind === "js" && code.includes("__t3extSample"));
-  const window = {};
-  vm.runInNewContext(code, { window, console, Date });
-  assert.equal(window.__t3extSample.id, "sample");
+  assert.match(appWindow.injected.find(([kind]) => kind === "js")[1], /sourceURL=t3ext\/page\.js/, "page.js goes in before any renderer");
+  assert.equal(page.__t3extSample.id, "sample");
+  assert.equal(typeof page.__t3extSample.ext.config.update, "function");
+});
+
+test("an error renderer.js throws while loading shows on its extension, and the others still load", async (t) => {
+  const appWindow = fakeContents("t3code://app/index.html", pageContext());
+  const { electron, state } = fakeElectron({ ready: true, contents: [appWindow] });
+  const { host } = loadHost(t, electron, { "a-throws": { "renderer.js": 'throw new Error("boom while loading");' } });
+  host.start();
+  appWindow.emit("dom-ready");
+  await new Promise((resolve) => setImmediate(resolve));
+  const fromApp = { senderFrame: { url: "t3code://app/index.html" } };
+  const errors = Object.fromEntries((await state.handlers.get("t3ext:list")(fromApp)).map((extension) => [extension.id, extension.error]));
+  assert.equal(errors["a-throws"], "renderer.js: boom while loading");
+  assert.equal(errors.sample, null);
 });
 
 test("setConfig stores the value and sends it to every T3 window, and nowhere else", async (t) => {
