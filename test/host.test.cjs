@@ -224,3 +224,14 @@ test("early start, before the app is ready, reloads nothing and registers the pr
   await new Promise((resolve) => setImmediate(resolve));
   assert.ok(later.injected.length > 0, "windows created later get the injected parts");
 });
+
+test("invoke reaches the handler a main.js gave handle(), its last one, and only from T3 windows", async (t) => {
+  const { electron, state } = fakeElectron({ ready: true });
+  const { host } = loadHost(t, electron, { "no-main": { "renderer.js": "" } });
+  host.start();
+  const invoke = state.handlers.get("t3ext:invoke");
+  const fromApp = { senderFrame: { url: "t3code://app/index.html" } };
+  assert.deepEqual(await invoke(fromApp, "sample", 2, 3), { from: "sample", sum: 5, pid: process.pid });
+  assert.throws(() => invoke(fromApp, "no-main"), /no-main has no main\.js handler/);
+  assert.throws(() => invoke({ senderFrame: { url: "https://example.com/" } }, "sample", 1, 1), /only available to T3 Code windows/);
+});

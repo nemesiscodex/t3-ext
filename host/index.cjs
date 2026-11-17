@@ -24,7 +24,8 @@ function start() {
   globalThis[STARTED] = true;
   const registry = createRegistry({ builtinDir: path.join(__dirname, "builtin") });
 
-  registerIpc(registry);
+  const mainHandlers = new Map();
+  registerIpc(registry, mainHandlers);
   wrapApplicationMenu(registry);
   const watched = new WeakSet();
   const watch = (contents) => {
@@ -51,7 +52,7 @@ function start() {
   };
   if (app.isReady()) onReady();
   else app.whenReady().then(onReady);
-  loadMains(registry);
+  loadMains(registry, mainHandlers);
   presence.serve();
   return { started: true, reloaded };
 }
@@ -62,7 +63,7 @@ function registerPreload(ses) {
   else ses.setPreloads([...ses.getPreloads(), filePath]);
 }
 
-function loadMains(registry) {
+function loadMains(registry, mainHandlers) {
   for (const extension of registry.list()) {
     if (!extension.enabled || !extension.parts.main || !extension.manifest) continue;
     const report = (error) => {
@@ -73,7 +74,8 @@ function loadMains(registry) {
       const exported = require(path.join(extension.dir, PARTS.main));
       const activate = typeof exported === "function" ? exported : exported?.default;
       if (typeof activate === "function") {
-        Promise.resolve(activate({ id: extension.id, dir: extension.dir, electron })).catch(report);
+        const handle = (fn) => mainHandlers.set(extension.id, fn);
+        Promise.resolve(activate({ id: extension.id, dir: extension.dir, electron, handle })).catch(report);
       }
     } catch (error) {
       report(error);
@@ -128,7 +130,7 @@ function injectRenderers(registry, contents) {
   }
 }
 
-function registerIpc(registry) {
+function registerIpc(registry, mainHandlers) {
   const handle = (channel, fn) => {
     ipcMain.handle(channel, (event, ...args) => {
       if (!isAppUrl(event.senderFrame?.url)) throw new Error(`${channel} is only available to T3 Code windows`);
@@ -163,6 +165,11 @@ function registerIpc(registry) {
     });
     if (result.canceled || result.filePaths.length === 0) return null;
     return registry.add(result.filePaths[0]);
+  });
+  handle("t3ext:invoke", (_event, id, ...args) => {
+    const fn = mainHandlers.get(String(id));
+    if (!fn) throw new Error(`${id} has no main.js handler: its main.js must call handle(fn), and a new main.js loads when T3 Code restarts through T3 Code+`);
+    return fn(...args);
   });
   handle("t3ext:openFolder", async (_event, id) => {
     const dir = id == null ? registry.extensionsDir : registry.get(String(id)).dir;

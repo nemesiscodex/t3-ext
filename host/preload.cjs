@@ -11,6 +11,7 @@ if (location.protocol === "t3code:") {
     openFolder: (id) => ipcRenderer.invoke("t3ext:openFolder", id),
     getConfig: (id) => ipcRenderer.invoke("t3ext:getConfig", id),
     setConfig: (id, value) => ipcRenderer.invoke("t3ext:setConfig", id, value),
+    invoke: (id, ...args) => ipcRenderer.invoke("t3ext:invoke", id, ...args),
     // The IPC event object stays on this side of the bridge.
     onConfigChange: (listener) => {
       const forward = (_event, id, value) => listener(id, value);

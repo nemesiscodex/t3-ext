@@ -13,7 +13,7 @@ An extension is a folder with some CSS, some JavaScript, or both. You drop it in
 
 ## What extensions can do
 
-The [`examples`](examples) folder has four extensions you can try in a minute:
+The [`examples`](examples) folder has five extensions you can try in a minute:
 
 | Extension | What it does |
 | --- | --- |
@@ -21,6 +21,7 @@ The [`examples`](examples) folder has four extensions you can try in a minute:
 | [Streaming Mode](examples/streaming-mode) | An eye button that blurs the names of your private projects, and their thread titles, while you stream or share your screen. Profiles choose which projects stay readable. |
 | [Settle Boom](examples/settle-boom) | A small effect and a synthesized sound when a thread starts work, needs you, finishes, snoozes or wakes, and an explosion when you settle it. |
 | [Thread Doom](examples/thread-doom) | Play Doom over a thread while its agent works. The game pauses when the agent needs you or finishes. |
+| [Thread Tree](examples/thread-tree) | Threads an agent starts with T3's MCP tools show right below the thread that started them in the sidebar, indented like a tree, or under a copy of it when it sits in another section. |
 
 <table><tr>
 <td><img src="examples/project-groups/preview.png" alt="Project Groups" height="320"></td>
@@ -149,7 +150,21 @@ Add any of these optional files:
 | `renderer.js` | every T3 Code window | each time a window has loaded its HTML, which can be before React has rendered. Use a `MutationObserver` to wait for elements. |
 | `main.js` | T3 Code's main process, with full Node.js and Electron access | once. Before T3's own code when T3 Code+ starts T3, or right away when extensions load into a running T3. |
 
-If `main.js` exports a function, the host calls it with `{ id, dir, electron }`. Errors in any file are caught and shown in the extension manager, and T3 Code keeps running.
+If `main.js` exports a function, the host calls it with `{ id, dir, electron, handle }`. Errors in any file are caught and shown in the extension manager, and T3 Code keeps running.
+
+`handle(fn)` lets your `renderer.js` call your `main.js`, for what only the main process can do, such as reading files. `ext.main.invoke(...args)` in any T3 Code window calls `fn(...args)` and resolves with what it returns, or rejects with what it throws. A later `handle` call replaces `fn`. Arguments and results cross between processes, so keep them to plain JSON-like values.
+
+```js
+// main.js
+module.exports = ({ handle }) => {
+  handle(async (question) => (question === "uptime" ? process.uptime() : null));
+};
+
+// renderer.js
+ext.main.invoke("uptime").then((seconds) => console.log(seconds), (error) => console.warn("[my-ext]", error));
+```
+
+`ext.main.invoke` rejects when the extension's `main.js` did not call `handle`, which also happens until T3 Code restarts through T3 Code+ after you add a `main.js`. Handle it: leave T3 alone and log once.
 
 Style your UI with T3's CSS variables, such as `var(--background)`, `var(--foreground)`, `var(--border)` and `var(--primary)`, so it follows light and dark mode.
 
@@ -171,6 +186,9 @@ ext.settings.register((container, { close }) => {
 });
 ext.settings.open(); // opens the manager on your panel; false when the manager is off
 ext.settings.canOpen();
+
+// Your main.js, through the function it gave handle(); see above.
+await ext.main.invoke(...args);
 
 // T3's sidebar.
 ext.t3.filterButton();       // T3's "Filter threads by project" button, or null
@@ -211,6 +229,7 @@ await window.t3ext.remove("my-ext");          // moves the folder to the Trash
 await window.t3ext.add();                     // asks for a folder, then copies it in
 await window.t3ext.openFolder("my-ext");      // or openFolder() for the extensions folder
 await window.t3ext.getConfig("my-ext");       // what ext.config uses
+await window.t3ext.invoke("my-ext", ...args);  // what ext.main.invoke uses
 ```
 
 Changes to `style.css` and `renderer.js` apply when you reload the window (**Extensions > Reload Window**), and so do changes to `host/page.js`. Changes to `main.js`, and to the rest of the host, apply when you restart T3 Code through T3 Code+. `ext` needs a host from this version on: after you update this checkout, restart T3 Code through T3 Code+ before you reload, or every `renderer.js` that uses `ext` stops with "ext is not defined". Enabled state and config live in `~/.t3/extensions.json` as `{ "disabled": ["id", ...], "config": { "id": ... } }`.
@@ -223,7 +242,7 @@ ln -s ~/code/my-ext ~/.t3/extensions/my-ext
 
 Edit, then reload the window. **Remove** in the manager moves only the link to the Trash, not your repository.
 
-The examples show the common patterns: reacting to T3's own events ([Settle Boom](examples/settle-boom)), reading T3's state from React ([Project Groups](examples/project-groups), [Streaming Mode](examples/streaming-mode)), and using `main.js` to reach a frame from another origin ([Thread Doom](examples/thread-doom)).
+The examples show the common patterns: reacting to T3's own events ([Settle Boom](examples/settle-boom)), reading T3's state from React ([Project Groups](examples/project-groups), [Streaming Mode](examples/streaming-mode)), using `main.js` to reach a frame from another origin ([Thread Doom](examples/thread-doom)), and asking `main.js` with `ext.main.invoke` for what the window cannot see ([Thread Tree](examples/thread-tree)).
 
 The extension manager is itself an extension, in [`host/builtin/extension-manager`](host/builtin/extension-manager). You can disable it but not remove it. If you disable it, **Extensions > Manage Extensions…** offers to turn it back on.
 

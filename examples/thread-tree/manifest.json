@@ -1,0 +1,5 @@
+{
+  "name": "Thread Tree",
+  "version": "1.0.0",
+  "description": "Shows the threads an agent launches right below the thread that launched them in the sidebar, indented like a tree"
+}

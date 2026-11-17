@@ -1,0 +1,65 @@
+/* One guide line per 12px level, drawn in the indent. */
+li[data-thread-item][data-thread-tree-depth] {
+  background-image: repeating-linear-gradient(to right, transparent 0 5px, var(--border) 5px 6px, transparent 6px 12px);
+  background-repeat: no-repeat;
+}
+
+li[data-thread-item][data-thread-tree-depth="1"] {
+  padding-inline-start: 12px;
+  background-size: 12px 100%;
+}
+
+li[data-thread-item][data-thread-tree-depth="2"] {
+  padding-inline-start: 24px;
+  background-size: 24px 100%;
+}
+
+li[data-thread-item][data-thread-tree-depth="3"] {
+  padding-inline-start: 36px;
+  background-size: 36px 100%;
+}
+
+li[data-thread-item][data-thread-tree-depth="4"] {
+  padding-inline-start: 48px;
+  background-size: 48px 100%;
+}
+
+.thread-tree-parent {
+  list-style: none;
+}
+
+.thread-tree-parent > button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 28px;
+  padding-inline: 10px;
+  border: 0;
+  border-radius: var(--radius-md, 6px);
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 12px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.thread-tree-parent > button:hover,
+.thread-tree-parent > button:focus-visible {
+  background: var(--accent);
+  color: var(--foreground);
+}
+
+.thread-tree-parent-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.thread-tree-parent-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

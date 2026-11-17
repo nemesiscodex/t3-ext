@@ -94,6 +94,19 @@
     },
   };
 
+  // --- Calling the extension's main.js ----------------------------------------------------------
+
+  function mainOf(id) {
+    return {
+      invoke(...args) {
+        if (typeof api.invoke !== "function") {
+          return Promise.reject(new Error(`${id}: this host has no ext.main.invoke. Restart T3 Code through T3 Code+ to load the current host.`));
+        }
+        return api.invoke(id, ...args);
+      },
+    };
+  }
+
   // --- Reading T3's sidebar ---------------------------------------------------------------------
 
   const FILTER_BUTTON = 'button[data-slot="combobox-trigger"][aria-label^="Filter threads by project"]';
@@ -502,7 +515,7 @@
   function run(id, body) {
     if (ran.has(id)) return null;
     ran.add(id);
-    const ext = { config: configOf(id), settings: settingsOf(id), t3: { ...t3, threads: threadsOf(id) }, ui };
+    const ext = { config: configOf(id), settings: settingsOf(id), main: mainOf(id), t3: { ...t3, threads: threadsOf(id) }, ui };
     if (id === MANAGER_ID) ext.manager = manager;
     try {
       body(id, ext);

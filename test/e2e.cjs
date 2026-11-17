@@ -19,7 +19,7 @@ const DOCS = path.join(ROOT, "docs");
 const SHOTS = path.join(os.tmpdir(), "t3ext-e2e-shots");
 const keep = process.argv.includes("--keep");
 const LONG_ID = "longextensionfolder".repeat(5);
-const EXAMPLES = ["project-groups", "settle-boom", "streaming-mode", "thread-doom"];
+const EXAMPLES = ["project-groups", "settle-boom", "streaming-mode", "thread-doom", "thread-tree"];
 const ran = (id) => `window[Symbol.for("t3ext.page")]?.ran(${JSON.stringify(id)}) === true`;
 
 const step = (message) => console.log(`ok - ${message}`);
@@ -160,6 +160,9 @@ async function main() {
     assert.equal(mainMarker.pid, pid, "main.js ran inside T3's main process");
     assert.equal(mainMarker.hasApp, true, "main.js received electron");
     step("sample main.js ran in the main process and received { id, dir, electron }");
+    assert.deepEqual(await page.evaluate("window.__t3extSample.ext.main.invoke(2, 3)"), { from: "sample", sum: 5, pid });
+    await assert.rejects(page.evaluate(`window.t3ext.invoke("builtin:extension-manager")`), /has no main\.js handler/);
+    step("ext.main.invoke reaches the sample's main.js handler through the real preload; an extension without one is refused");
 
     await assert.rejects(page.evaluate(`window.t3ext.remove("builtin:extension-manager")`), /built in and cannot be removed/);
     step("removing the builtin manager is refused");
@@ -342,7 +345,7 @@ async function main() {
     page.events.length = 0;
     await page.evaluate("location.reload()");
     await sleep(1000);
-    await evaluateUntil(page, "the four examples", `document.readyState === 'complete' && ${EXAMPLES.map(ran).join(" && ")}`);
+    await evaluateUntil(page, "the five examples", `document.readyState === 'complete' && ${EXAMPLES.map(ran).join(" && ")}`);
     await page.evaluate('location.hash = "#/"');
     await sleep(3000);
     const exampleErrors = await page.evaluate(`window.t3ext.list().then((list) => Object.fromEntries(list.filter((e) => ${JSON.stringify(EXAMPLES)}.includes(e.id)).map((e) => [e.id, e.error])))`);
@@ -360,7 +363,7 @@ async function main() {
       return { button: !!button, projects: button ? Array.isArray(t3.projects()) : null, filter: button ? !!t3.projectFilter() : null, rows: t3.threadRows().length };
     })()`);
     if (contract.button) assert.deepEqual([contract.projects, contract.filter], [true, true], "page.js finds T3's project catalog and filter from the filter button");
-    step(`the four examples load in the clone with no errors or warnings; page.js reads T3: ${JSON.stringify(contract)}`);
+    step(`the five examples load in the clone with no errors or warnings; page.js reads T3: ${JSON.stringify(contract)}`);
 
     await page.evaluate(`window.t3ext.setEnabled("sample", false)`);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"), "utf8")), { disabled: ["sample"], config: {} });

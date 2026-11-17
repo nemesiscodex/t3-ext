@@ -15,7 +15,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 // One page. `stored` is the host's config file; setConfig broadcasts to every listener, as the
 // host does to every window.
-function loadPage({ stored = {}, query = () => null, queryAll = () => [] } = {}) {
+function loadPage({ stored = {}, query = () => null, queryAll = () => [], invoke } = {}) {
   const listeners = new Set();
   const calls = [];
   const t3ext = {
@@ -31,6 +31,7 @@ function loadPage({ stored = {}, query = () => null, queryAll = () => [] } = {})
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    ...(invoke ? { invoke } : {}),
   };
   class WebSocket {
     send() {}
@@ -73,6 +74,13 @@ test("each extension runs once, gets its id, and a throw comes back as the error
   assert.deepEqual(seen, [["a", "function"]]);
   assert.equal(page.ran("a"), true);
   assert.equal(page.run("b", () => missingName), "missingName is not defined");
+});
+
+test("main: invoke goes to the host with the extension's own id, and fails clearly on an older host", async () => {
+  const { extOf } = loadPage({ invoke: async (id, ...args) => ({ id, args }) });
+  assert.deepEqual(await extOf("a").main.invoke(1, "two"), { id: "a", args: [1, "two"] });
+  const old = loadPage();
+  await assert.rejects(old.extOf("a").main.invoke(), /no ext\.main\.invoke\. Restart T3 Code through T3 Code\+/);
 });
 
 test("config: an extension hears only its own changes, each value once, its own write included", async () => {
