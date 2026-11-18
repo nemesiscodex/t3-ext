@@ -19,7 +19,7 @@ const DOCS = path.join(ROOT, "docs");
 const SHOTS = path.join(os.tmpdir(), "t3ext-e2e-shots");
 const keep = process.argv.includes("--keep");
 const LONG_ID = "longextensionfolder".repeat(5);
-const EXAMPLES = ["project-groups", "settle-boom", "streaming-mode", "thread-doom", "thread-tree"];
+const EXAMPLES = ["hide-offline-threads", "project-groups", "settle-boom", "streaming-mode", "thread-doom", "thread-tree"];
 const ran = (id) => `window[Symbol.for("t3ext.page")]?.ran(${JSON.stringify(id)}) === true`;
 
 const step = (message) => console.log(`ok - ${message}`);
@@ -345,7 +345,7 @@ async function main() {
     page.events.length = 0;
     await page.evaluate("location.reload()");
     await sleep(1000);
-    await evaluateUntil(page, "the five examples", `document.readyState === 'complete' && ${EXAMPLES.map(ran).join(" && ")}`);
+    await evaluateUntil(page, "the six examples", `document.readyState === 'complete' && ${EXAMPLES.map(ran).join(" && ")}`);
     await page.evaluate('location.hash = "#/"');
     await sleep(3000);
     const exampleErrors = await page.evaluate(`window.t3ext.list().then((list) => Object.fromEntries(list.filter((e) => ${JSON.stringify(EXAMPLES)}.includes(e.id)).map((e) => [e.id, e.error])))`);
@@ -363,7 +363,14 @@ async function main() {
       return { button: !!button, projects: button ? Array.isArray(t3.projects()) : null, filter: button ? !!t3.projectFilter() : null, rows: t3.threadRows().length };
     })()`);
     if (contract.button) assert.deepEqual([contract.projects, contract.filter], [true, true], "page.js finds T3's project catalog and filter from the filter button");
-    step(`the five examples load in the clone with no errors or warnings; page.js reads T3: ${JSON.stringify(contract)}`);
+    step(`the six examples load in the clone with no errors or warnings; page.js reads T3: ${JSON.stringify(contract)}`);
+    const environments = await evaluateUntil(page, "the clone's own environment, connected", `(() => {
+      const list = window.__t3extSample.ext.t3.environments.get();
+      return list?.length === 1 && list[0].phase === "connected" && list;
+    })()`);
+    assert.equal(environments[0].disconnected, false);
+    assert.deepEqual(await page.evaluate("window.t3HideOfflineThreads.disconnected"), []);
+    step(`ext.t3.environments finds T3's atom registry from React and lists the clone's own environment: ${JSON.stringify(environments)}`);
 
     await page.evaluate(`window.t3ext.setEnabled("sample", false)`);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"), "utf8")), { disabled: ["sample"], config: {} });

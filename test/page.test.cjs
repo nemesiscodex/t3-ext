@@ -15,7 +15,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 // One page. `stored` is the host's config file; setConfig broadcasts to every listener, as the
 // host does to every window.
-function loadPage({ stored = {}, query = () => null, queryAll = () => [], invoke } = {}) {
+function loadPage({ stored = {}, query = () => null, queryAll = () => [], invoke, Element = class {} } = {}) {
   const listeners = new Set();
   const calls = [];
   const t3ext = {
@@ -45,7 +45,9 @@ function loadPage({ stored = {}, query = () => null, queryAll = () => [], invoke
       return this.raw;
     }
   }
-  const context = vm.createContext({ console, t3ext, WebSocket, MessageEvent, addEventListener() {}, Event: class {}, Element: class {}, location: { hash: "" }, document: { querySelector: query, querySelectorAll: queryAll } });
+  const timers = [];
+  const setTimeout = (fn) => timers.push(fn);
+  const context = vm.createContext({ console, t3ext, WebSocket, MessageEvent, setTimeout, addEventListener() {}, Event: class {}, Element, location: { hash: "" }, document: { querySelector: query, querySelectorAll: queryAll } });
   context.window = context;
   vm.runInContext(PAGE, context);
   const page = context[KEY];
@@ -60,6 +62,7 @@ function loadPage({ stored = {}, query = () => null, queryAll = () => [], invoke
     context,
     extOf,
     calls,
+    timers,
     broadcast: (id, value) => listeners.forEach((listener) => listener(id, value)),
     send: (message) => socket.send(JSON.stringify(message)),
     receive: (message) => new MessageEvent(JSON.stringify(message), socket).data,
@@ -219,4 +222,120 @@ test("t3: openThread reads the thread from T3's hash route", () => {
   assert.deepEqual({ ...openThread() }, { environmentId: "env-1", threadId: "mcp:abc" });
   context.location.hash = "#/settings";
   assert.equal(openThread(), null);
+});
+
+// T3's atom registry: `values` maps each atom to its value, and set() changes one and tells its
+// subscribers, as the registry does after a change.
+function atomRegistry(values) {
+  const listeners = new Map();
+  return {
+    getNodes: () => new Map([...values.keys()].map((atom) => [atom, { atom }])),
+    get: (atom) => values.get(atom),
+    subscribe(atom, listener) {
+      listeners.set(atom, [...(listeners.get(atom) ?? []), listener]);
+      return () => listeners.set(atom, listeners.get(atom).filter((other) => other !== listener));
+    },
+    set(atom, value) {
+      values.set(atom, value);
+      for (const listener of listeners.get(atom) ?? []) listener(value);
+    },
+  };
+}
+
+const atom = (label) => ({ label: [label, "    at stack"] });
+const presentation = (label, phase) => ({ entry: { target: { label } }, connection: { phase, error: null }, serverConfig: null });
+
+test("t3: environments are read from T3's atom registry, found through the app's first element, with T3's reading of disconnected", () => {
+  const presentations = atom("environment-presentations");
+  const registry = atomRegistry(
+    new Map([
+      [atom("environment-presentation:local"), presentation("Local", "connected")],
+      [
+        presentations,
+        new Map([
+          ["local", presentation("Local", "connected")],
+          ["starting", presentation("Starting", "connecting")],
+          ["retrying", presentation("Retrying", "reconnecting")],
+          ["off", presentation("Off", "offline")],
+          ["idle", presentation("Idle", "available")],
+          ["failed", presentation("Failed", "error")],
+          ["old", presentation("Old", "unsupported")],
+          ["future", presentation("Future", "some-new-phase")],
+          ["bare", {}],
+        ]),
+      ],
+    ]),
+  );
+  const app = fakeNode([{ className: "app" }, { value: { get() {} } }, { value: registry, children: {} }, {}]);
+  const { extOf } = loadPage({ query: (selector) => (selector === "#root > *" ? app : null) });
+  assert.deepEqual(JSON.parse(JSON.stringify(extOf("a").t3.environments.get())), [
+    { environmentId: "local", label: "Local", phase: "connected", disconnected: false },
+    { environmentId: "starting", label: "Starting", phase: "connecting", disconnected: false },
+    { environmentId: "retrying", label: "Retrying", phase: "reconnecting", disconnected: true },
+    { environmentId: "off", label: "Off", phase: "offline", disconnected: true },
+    { environmentId: "idle", label: "Idle", phase: "available", disconnected: true },
+    { environmentId: "failed", label: "Failed", phase: "error", disconnected: true },
+    { environmentId: "old", label: "Old", phase: "unsupported", disconnected: true },
+    { environmentId: "future", label: "Future", phase: "some-new-phase", disconnected: false },
+    { environmentId: "bare", label: null, phase: null, disconnected: false },
+  ]);
+
+  assert.equal(loadPage().extOf("a").t3.environments.get(), null, "before React renders the app");
+  const renamed = atomRegistry(new Map([[atom("environment-presentations-v2"), new Map()]]));
+  const renamedApp = fakeNode([{}, { value: renamed }]);
+  assert.equal(loadPage({ query: () => renamedApp }).extOf("a").t3.environments.get(), null, "an atom T3 renamed reads as not found");
+});
+
+test("t3: environment listeners hear the first find, then each change, an environment added later included", async () => {
+  const presentations = atom("environment-presentations");
+  const registry = atomRegistry(new Map([[presentations, new Map([["local", presentation("Local", "connected")]])]]));
+  let app = null;
+  const { extOf, timers } = loadPage({ query: () => app });
+  const environments = extOf("a").t3.environments;
+  let heard = 0;
+  environments.subscribe(() => heard++);
+  extOf("b").t3.environments.subscribe(() => {
+    throw new Error("a broken listener");
+  });
+  assert.equal(environments.get(), null);
+
+  app = fakeNode([{}, { value: registry }]);
+  timers.shift()();
+  await tick();
+  assert.equal(heard, 1, "heard once T3's environments are found");
+
+  registry.set(presentations, new Map([["local", presentation("Local", "connected")], ["linux", presentation("Linux box", "reconnecting")]]));
+  assert.equal(heard, 2);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(environments.get().map((environment) => [environment.environmentId, environment.disconnected]))),
+    [["local", false], ["linux", true]],
+  );
+  assert.equal(timers.length, 0, "no more looking once found");
+});
+
+test("t3: rowOf reads the row's key and the shelf it sits in", () => {
+  class Element {
+    constructor(attributes, row) {
+      this.attributes = attributes;
+      this.row = row;
+    }
+    closest() {
+      return this;
+    }
+    getAttribute(name) {
+      return this.attributes[name] ?? null;
+    }
+    querySelector() {
+      return this.row;
+    }
+  }
+  const { extOf } = loadPage({ Element });
+  const { rowOf } = extOf("a").t3;
+  const row = (parent) => new Element({ "data-thread-item": "env-1:mcp:abc" }, parent === undefined ? null : new Element({ "data-sidebar-parent": parent }));
+  assert.deepEqual({ ...rowOf(row("shelf:snoozed")), element: null }, { element: null, environmentId: "env-1", threadId: "mcp:abc", shelf: "snoozed" });
+  assert.equal(rowOf(row("shelf:settled")).shelf, "settled");
+  assert.equal(rowOf(row("project-folder:k1")).shelf, null, "a project folder is not a shelf");
+  assert.equal(rowOf(row(null)).shelf, null);
+  assert.equal(rowOf(row()).shelf, null, "a row T3 drew without a navigation row");
+  assert.equal(rowOf({}), null);
 });

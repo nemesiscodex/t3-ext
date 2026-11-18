@@ -13,7 +13,7 @@ An extension is a folder with some CSS, some JavaScript, or both. You drop it in
 
 ## What extensions can do
 
-The [`examples`](examples) folder has five extensions you can try in a minute:
+The [`examples`](examples) folder has six extensions you can try in a minute:
 
 | Extension | What it does |
 | --- | --- |
@@ -22,6 +22,7 @@ The [`examples`](examples) folder has five extensions you can try in a minute:
 | [Settle Boom](examples/settle-boom) | A small effect and a synthesized sound when a thread starts work, needs you, finishes, snoozes or wakes, and an explosion when you settle it. |
 | [Thread Doom](examples/thread-doom) | Play Doom over a thread while its agent works. The game pauses when the agent needs you or finishes. |
 | [Thread Tree](examples/thread-tree) | Threads an agent starts with T3's MCP tools show right below the thread that started them in the sidebar, indented like a tree, or under a copy of it when it sits in another section. |
+| [Hide Offline Threads](examples/hide-offline-threads) | Threads of linked environments that are not connected leave the sidebar's inbox until they connect again. Snoozed and settled threads stay. |
 
 <table><tr>
 <td><img src="examples/project-groups/preview.png" alt="Project Groups" height="320"></td>
@@ -194,11 +195,16 @@ await ext.main.invoke(...args);
 ext.t3.filterButton();       // T3's "Filter threads by project" button, or null
 ext.t3.projects();           // [{ key, name, icon, environmentId, workspaceRoot, faviconPath, refs, members }], or null
 ext.t3.projectFilter();      // { keys(), set(keys) } for T3's project filter, or null
-ext.t3.threadRows(threadId); // [{ element, environmentId, threadId }]; all rows without an id
+ext.t3.threadRows(threadId); // [{ element, environmentId, threadId, shelf }]; all rows without an id
+                             // shelf: "working", "snoozed", "settled", or null for any other row
 ext.t3.rowOf(node);          // the row a node is in, or null
 ext.t3.rowData(row.element); // { thread, project, wokeAt } the row renders from, or null
 ext.t3.openThread();         // { environmentId, threadId } of the open thread, or null
 ext.t3.fiberOf(node);        // the live React fiber of a node, to read what the rest does not cover
+
+// T3's linked environments, read from its atom registry. get() is null before React has rendered.
+ext.t3.environments.get();         // [{ environmentId, label, phase, disconnected }], or null
+ext.t3.environments.subscribe(() => {}); // once they are first found, then on each change, a new environment included
 
 // T3's thread updates, read from its WebSocket as T3 receives them.
 ext.t3.threads.subscribe((event) => {}); // { kind: "updated", shell, live }, { kind: "removed", threadId },

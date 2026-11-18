@@ -212,13 +212,17 @@
   }
 
   // A row's data-thread-item is "<environmentId>:<threadId>", and a thread id can hold colons
-  // itself ("mcp:<uuid>").
+  // itself ("mcp:<uuid>"). T3's arrow keys group rows by `data-sidebar-parent`, which names the
+  // shelf a Working, Snoozed or Settled row sits in ("shelf:<name>"). Other rows have none, or
+  // their project folder's.
   function rowOf(node) {
     const element = node instanceof Element ? node.closest(THREAD_ROW) : null;
     if (!element) return null;
     const item = element.getAttribute("data-thread-item");
     const at = item.indexOf(":");
-    return { element, environmentId: at < 0 ? "" : item.slice(0, at), threadId: item.slice(at + 1) };
+    const parent = element.querySelector("[data-sidebar-row]")?.getAttribute("data-sidebar-parent") ?? "";
+    const shelf = parent.startsWith("shelf:") ? parent.slice("shelf:".length) : null;
+    return { element, environmentId: at < 0 ? "" : item.slice(0, at), threadId: item.slice(at + 1), shelf };
   }
 
   // Sidebar rows in page order, or only those of one thread. A thread can have more than one.
@@ -251,6 +255,90 @@
       }
     };
     return { environmentId: decode(match[1]), threadId: decode(match[2]) };
+  }
+
+  // --- T3's environments ------------------------------------------------------------------------
+
+  // T3 keeps its state in an effect atom registry that a React context provider hands to the whole
+  // app. Its root mounts the `environment-presentations` atom: a Map of every environment, this
+  // Mac's included, to { entry, connection: { phase }, ... } (createEnvironmentPresentationAtoms
+  // in client-runtime's state/presentation.ts).
+  const PRESENTATIONS = "environment-presentations";
+  // The presentation phases T3's connectionProjectionPhase (connection/model.ts) calls
+  // "disconnected". "connecting" is a first attempt that has not failed yet. A phase T3 adds
+  // later counts as connected, so nothing hides on a guess.
+  const DISCONNECTED = new Set(["available", "offline", "reconnecting", "error", "unsupported"]);
+  const FIND_EVERY_MS = 500;
+  const FIND_FOR_MS = 120_000;
+
+  const isRegistry = (value) => ["getNodes", "get", "subscribe"].every((name) => typeof value?.[name] === "function");
+
+  function findRegistry() {
+    for (const fiber of ancestors(document.querySelector("#root > *"), 200)) {
+      const value = fiber.memoizedProps?.value;
+      if (isRegistry(value)) return value;
+    }
+    return null;
+  }
+
+  function labelled(registry, label) {
+    for (const [key, node] of registry.getNodes()) {
+      const atom = node?.atom ?? key;
+      if (atom?.label?.[0] === label) return atom;
+    }
+    return null;
+  }
+
+  const environmentListeners = new Set();
+  const notifyEnvironments = () => environmentListeners.forEach((listener) => listener());
+  // The registry and the atom live as long as the page, so once found they are kept. The one
+  // subscription also keeps the atom mounted.
+  let presentations = null;
+
+  function findPresentations() {
+    if (presentations) return presentations;
+    const registry = findRegistry();
+    const atom = registry && labelled(registry, PRESENTATIONS);
+    if (!atom) return null;
+    presentations = { registry, atom };
+    registry.subscribe(atom, notifyEnvironments);
+    Promise.resolve().then(notifyEnvironments);
+    return presentations;
+  }
+
+  // [{ environmentId, label, phase, disconnected }], or null before React has rendered, or when T3
+  // renamed what this reads.
+  function environments() {
+    const found = findPresentations();
+    const value = found && found.registry.get(found.atom);
+    if (typeof value?.entries !== "function") return null;
+    return [...value.entries()].map(([environmentId, presentation]) => {
+      const phase = presentation?.connection?.phase ?? null;
+      return { environmentId, label: presentation?.entry?.target?.label ?? null, phase, disconnected: DISCONNECTED.has(phase) };
+    });
+  }
+
+  let finding = null;
+  function keepFinding(startedAt = Date.now()) {
+    if (finding || findPresentations() || Date.now() - startedAt > FIND_FOR_MS) return;
+    finding = setTimeout(() => {
+      finding = null;
+      keepFinding(startedAt);
+    }, FIND_EVERY_MS);
+  }
+
+  function environmentsOf(id) {
+    return {
+      get: environments,
+      // listener() runs whenever get() may return something new: once T3's environments are
+      // first found, then after each change to any of them, an environment added later included.
+      subscribe(listener) {
+        const wrapped = safely(`${id} environment listener`, listener);
+        environmentListeners.add(wrapped);
+        keepFinding();
+        return () => environmentListeners.delete(wrapped);
+      },
+    };
   }
 
   // --- T3's thread updates ----------------------------------------------------------------------
@@ -515,7 +603,7 @@
   function run(id, body) {
     if (ran.has(id)) return null;
     ran.add(id);
-    const ext = { config: configOf(id), settings: settingsOf(id), main: mainOf(id), t3: { ...t3, threads: threadsOf(id) }, ui };
+    const ext = { config: configOf(id), settings: settingsOf(id), main: mainOf(id), t3: { ...t3, threads: threadsOf(id), environments: environmentsOf(id) }, ui };
     if (id === MANAGER_ID) ext.manager = manager;
     try {
       body(id, ext);

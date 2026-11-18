@@ -1,0 +1,5 @@
+{
+  "name": "Hide Offline Threads",
+  "version": "1.0.0",
+  "description": "Hides the threads of linked environments that are not connected from the sidebar's inbox, until they connect again"
+}
