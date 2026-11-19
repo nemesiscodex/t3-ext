@@ -13,7 +13,7 @@ An extension is a folder with some CSS, some JavaScript, or both. You drop it in
 
 ## What extensions can do
 
-The [`examples`](examples) folder has six extensions you can try in a minute:
+The [`examples`](examples) folder has seven extensions you can try in a minute:
 
 | Extension | What it does |
 | --- | --- |
@@ -23,6 +23,7 @@ The [`examples`](examples) folder has six extensions you can try in a minute:
 | [Thread Doom](examples/thread-doom) | Play Doom over a thread while its agent works. The game pauses when the agent needs you or finishes. |
 | [Thread Tree](examples/thread-tree) | Threads an agent starts with T3's MCP tools show right below the thread that started them in the sidebar, indented like a tree, or under a copy of it when it sits in another section. |
 | [Hide Offline Threads](examples/hide-offline-threads) | Threads of linked environments that are not connected leave the sidebar's inbox until they connect again. Snoozed and settled threads stay. |
+| [Workspace Default](examples/workspace-default) | A pin next to Current checkout and New worktree in the composer's Workspace menu makes that choice the project's default for new threads, without going to Settings. |
 
 <table><tr>
 <td><img src="examples/project-groups/preview.png" alt="Project Groups" height="320"></td>
@@ -216,6 +217,13 @@ ext.t3.threads.asks(shell);          // "approval", "input" or null
 ext.t3.threads.owner(shell);         // the thread whose row shows a subagent's question
 ext.t3.threads.isSubagent(shell);
 
+// An RPC to an environment's server, sent on T3's own connection to it. Resolves with the result,
+// or rejects with the error's message, or when no connection to the environment is open.
+// Tags are the request/response methods in WS_METHODS (T3's contracts/src/rpc.ts); subscriptions
+// are refused. A tag the server does not know rejects with error.unknownTag and is not sent again.
+await ext.t3.request(environmentId, "server.getSettings");
+await ext.t3.request(environmentId, "server.updateSettings", { patch });
+
 // Page UI that matches the manager and stays out of T3's keyboard shortcuts.
 ext.ui.el("button", { className: "t3ext-button", onClick: () => {} }, "Label");
 ext.ui.icon([["path", { d: "M20 6 9 17l-5-5" }]], "my-icon"); // a lucide icon from its nodes
@@ -248,7 +256,7 @@ ln -s ~/code/my-ext ~/.t3/extensions/my-ext
 
 Edit, then reload the window. **Remove** in the manager moves only the link to the Trash, not your repository.
 
-The examples show the common patterns: reacting to T3's own events ([Settle Boom](examples/settle-boom)), reading T3's state from React ([Project Groups](examples/project-groups), [Streaming Mode](examples/streaming-mode)), using `main.js` to reach a frame from another origin ([Thread Doom](examples/thread-doom)), and asking `main.js` with `ext.main.invoke` for what the window cannot see ([Thread Tree](examples/thread-tree)).
+The examples show the common patterns: reacting to T3's own events ([Settle Boom](examples/settle-boom)), reading T3's state from React ([Project Groups](examples/project-groups), [Streaming Mode](examples/streaming-mode)), using `main.js` to reach a frame from another origin ([Thread Doom](examples/thread-doom)), asking `main.js` with `ext.main.invoke` for what the window cannot see ([Thread Tree](examples/thread-tree)), and changing T3's settings through its own server with `ext.t3.request` ([Workspace Default](examples/workspace-default)).
 
 The extension manager is itself an extension, in [`host/builtin/extension-manager`](host/builtin/extension-manager). You can disable it but not remove it. If you disable it, **Extensions > Manage Extensions…** offers to turn it back on.
 

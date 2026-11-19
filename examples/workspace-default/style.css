@@ -1,0 +1,62 @@
+.t3wd-pin {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.25rem;
+  margin-left: 0.75rem;
+  margin-right: -0.25rem;
+  height: 1.25rem;
+  min-width: 1.25rem;
+  padding: 0 0.3rem;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 0.25rem;
+  background: none;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 0.6875rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.t3wd-pin[hidden] {
+  display: none;
+}
+
+.t3wd-pin .t3wd-size-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+/* Only the item under the pointer or keyboard shows the pin it would set. */
+.t3wd-pin[data-kind="unpinned"] {
+  visibility: hidden;
+}
+
+[data-slot="select-item"][data-highlighted] > .t3wd-pin[data-kind="unpinned"],
+.t3wd-pin[data-kind="unpinned"]:focus-visible {
+  visibility: visible;
+}
+
+.t3wd-pin:hover {
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+.t3wd-pin[data-kind="pinned"] {
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+.t3wd-pin[data-kind="pinned"] .t3wd-size-icon {
+  fill: currentColor;
+}
+
+.t3wd-pin[data-kind="error"] {
+  color: var(--destructive, #e5484d);
+}
+
+.t3wd-pin:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}

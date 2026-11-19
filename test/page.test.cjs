@@ -34,7 +34,19 @@ function loadPage({ stored = {}, query = () => null, queryAll = () => [], invoke
     ...(invoke ? { invoke } : {}),
   };
   class WebSocket {
-    send() {}
+    readyState = 1;
+    sent = [];
+    listeners = {};
+    send(payload) {
+      this.sent.push(payload);
+    }
+    addEventListener(type, listener) {
+      (this.listeners[type] ??= []).push(listener);
+    }
+    close() {
+      this.readyState = 3;
+      for (const listener of this.listeners.close ?? []) listener();
+    }
   }
   class MessageEvent {
     constructor(text, target) {
@@ -339,3 +351,118 @@ test("t3: rowOf reads the row's key and the shelf it sits in", () => {
   assert.equal(rowOf(row()).shelf, null, "a row T3 drew without a navigation row");
   assert.equal(rowOf({}), null);
 });
+
+test("request: finds the environment's socket among T3's RPC sockets, and settles with the server's reply", async () => {
+  const { context, extOf } = loadPage();
+  const request = extOf("a").t3.request;
+  const [local, remote, other] = [new context.WebSocket(), new context.WebSocket(), new context.WebSocket()];
+  const reply = (socket, message) => new context.MessageEvent(JSON.stringify(message), socket).data;
+  const lastRequest = (socket) => JSON.parse(socket.sent.at(-1));
+
+  const saved = request("env-remote", "server.getSettings");
+  await tick();
+  other.send("binary-ish stream frame");
+  local.send(JSON.stringify({ _tag: "Ping" }));
+  remote.send(JSON.stringify([{ _tag: "Request", id: "7", tag: "subscribeServerConfig", payload: {}, headers: [] }]));
+  await tick();
+
+  assert.equal(other.sent.length, 1, "a socket that never sent an RPC message is not asked");
+  for (const [socket, environmentId] of [[local, "env-local"], [remote, "env-remote"]]) {
+    const asked = lastRequest(socket);
+    assert.equal(asked.tag, "server.getConfig");
+    assert.ok(BigInt(asked.id) >= 2n ** 62n, "ids stay clear of T3's own counter");
+    // The server splits a large frame into parts; all but the last start with a record separator.
+    const frame = JSON.stringify({ _tag: "Exit", requestId: asked.id, exit: { _tag: "Success", value: { environment: { environmentId }, big: "x".repeat(40) } } });
+    new context.MessageEvent("\u001e" + frame.slice(0, 30), socket).data;
+    new context.MessageEvent("\u001e" + frame.slice(30, 60), socket).data;
+    new context.MessageEvent(frame.slice(60), socket).data;
+  }
+  await tick();
+
+  const asked = lastRequest(remote);
+  assert.deepEqual([asked._tag, asked.tag, asked.payload, asked.headers], ["Request", "server.getSettings", {}, []]);
+  assert.equal(lastRequest(local).tag, "server.getConfig", "only the matching environment's socket gets the request");
+  reply(remote, { _tag: "Exit", requestId: "7", exit: { _tag: "Success", value: "T3's own reply" } });
+  reply(remote, [{ _tag: "Exit", requestId: asked.id, exit: { _tag: "Success", value: { defaultThreadEnvMode: null } } }]);
+  assert.equal(JSON.stringify(await saved), JSON.stringify({ defaultThreadEnvMode: null }));
+
+  const refused = request("env-local", "server.updateSettings", { patch: {} });
+  await tick();
+  const update = lastRequest(local);
+  assert.equal(update.tag, "server.updateSettings", "a known socket is not asked for its environment again");
+  reply(local, { _tag: "Exit", requestId: update.id, exit: { _tag: "Failure", cause: [{ _tag: "Fail", error: { _tag: "EnvironmentAuthorizationError", message: "lacks settings:write" } }] } });
+  await assert.rejects(refused, /server\.updateSettings: lacks settings:write/);
+});
+
+test("request: rejects when no socket answers for the environment", async () => {
+  const { context, extOf, timers } = loadPage();
+  const realNow = Date.now;
+  let now = realNow();
+  context.Date = { now: () => now };
+  const missing = extOf("a").t3.request("env-gone", "server.getSettings");
+  await tick();
+  now += 20_000;
+  timers.splice(0).forEach((fn) => fn());
+  await assert.rejects(missing, /no open connection to environment env-gone/);
+});
+
+// One socket of environment "env-a" that has answered its probe.
+async function connectedSocket() {
+  const loaded = loadPage();
+  const { context, extOf } = loaded;
+  const request = extOf("a").t3.request;
+  const socket = new context.WebSocket();
+  const reply = (message) => new context.MessageEvent(JSON.stringify(message), socket).data;
+  const last = () => JSON.parse(socket.sent.at(-1));
+  const first = request("env-a", "server.getSettings");
+  await tick();
+  socket.send(JSON.stringify({ _tag: "Ping" }));
+  await tick();
+  reply({ _tag: "Exit", requestId: last().id, exit: { _tag: "Success", value: { environment: { environmentId: "env-a" } } } });
+  await tick();
+  reply({ _tag: "Exit", requestId: last().id, exit: { _tag: "Success", value: {} } });
+  await first;
+  return { ...loaded, request, socket, reply, last };
+}
+
+test("request: a tag the server does not know fails at once, and is never sent to that environment again", async () => {
+  const { request, socket, reply, last } = await connectedSocket();
+  const mine = request("env-a", "server.renamedLater");
+  const other = request("env-a", "server.getSettings");
+  await tick();
+  const sentBefore = socket.sent.length;
+  reply({ _tag: "Defect", defect: "Unknown request tag: server.renamedLater" });
+  await assert.rejects(mine, (error) => error.unknownTag === true && /server\.renamedLater/.test(error.message));
+  reply({ _tag: "Exit", requestId: last().id, exit: { _tag: "Success", value: "still answered" } });
+  assert.equal(await other, "still answered", "a Defect for another tag leaves this request open");
+  await assert.rejects(request("env-a", "server.renamedLater"), (error) => error.unknownTag === true);
+  assert.equal(socket.sent.length, sentBefore, "the unknown tag is not sent again");
+
+  // T3's own server fails just that request instead.
+  const removed = request("env-a", "server.removedLater");
+  await tick();
+  reply({ _tag: "Exit", requestId: last().id, exit: { _tag: "Failure", cause: [{ _tag: "Die", defect: "Unknown request tag: server.removedLater" }] } });
+  await assert.rejects(removed, (error) => error.unknownTag === true);
+  await assert.rejects(request("env-a", "server.removedLater"), (error) => error.unknownTag === true);
+  assert.equal(JSON.parse(socket.sent.at(-1)).tag, "server.removedLater", "and it is not sent a second time");
+  assert.equal(socket.sent.filter((frame) => frame.includes("server.removedLater")).length, 1);
+});
+
+test("request: subscriptions are refused, a closed socket fails its requests, and a timeout interrupts the request", async () => {
+  const { request, socket, timers, last } = await connectedSocket();
+  await assert.rejects(request("env-a", "subscribeServerConfig"), /not subscriptions/);
+  await assert.rejects(request("env-a", "orchestration.subscribeShell"), /not subscriptions/);
+
+  const slow = request("env-a", "server.updateSettings", { patch: {} });
+  await tick();
+  const id = last().id;
+  timers.splice(0).forEach((fn) => fn());
+  await assert.rejects(slow, /no reply after 15 s/);
+  assert.deepEqual(JSON.parse(JSON.stringify(last())), { _tag: "Interrupt", requestId: id, interruptors: [] });
+
+  const cut = request("env-a", "server.getSettings");
+  await tick();
+  socket.close();
+  await assert.rejects(cut, /the connection closed/);
+});
+

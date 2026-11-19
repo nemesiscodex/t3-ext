@@ -19,7 +19,7 @@ const DOCS = path.join(ROOT, "docs");
 const SHOTS = path.join(os.tmpdir(), "t3ext-e2e-shots");
 const keep = process.argv.includes("--keep");
 const LONG_ID = "longextensionfolder".repeat(5);
-const EXAMPLES = ["hide-offline-threads", "project-groups", "settle-boom", "streaming-mode", "thread-doom", "thread-tree"];
+const EXAMPLES = ["hide-offline-threads", "project-groups", "settle-boom", "streaming-mode", "thread-doom", "thread-tree", "workspace-default"];
 const ran = (id) => `window[Symbol.for("t3ext.page")]?.ran(${JSON.stringify(id)}) === true`;
 
 const step = (message) => console.log(`ok - ${message}`);
@@ -98,6 +98,76 @@ async function reachSettings(page) {
     await page.evaluate(`[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === ${JSON.stringify(next)}).click()`);
   }
   throw new Error(`could not reach settings; clicked ${JSON.stringify(seen)}`);
+}
+
+async function mouseClick(page, x, y) {
+  await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+  await page.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+  await page.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+}
+
+// ext.t3.request on T3's own socket, then Workspace Default's pin in a new thread's Workspace menu.
+// The menu closes when the CDP session that opened it detaches, so it all runs on one session.
+async function checkWorkspaceDefault(page, dir, environmentId) {
+  const repo = path.join(dir, "demo-repo");
+  fs.mkdirSync(repo);
+  execFileSync("sh", ["-c", "git init -q -b main && git -c user.email=e2e@example.com -c user.name=e2e commit -q --allow-empty -m init"], { cwd: repo });
+  const projectId = await page.evaluate(`(async () => {
+    const { t3 } = window.__t3extSample.ext;
+    const config = await t3.request(${JSON.stringify(environmentId)}, "server.getConfig");
+    if (config.environment.environmentId !== ${JSON.stringify(environmentId)}) throw new Error("server.getConfig answered for " + config.environment.environmentId);
+    const project = await t3.request(${JSON.stringify(environmentId)}, "projects.mutate", { type: "project.create", commandId: crypto.randomUUID(), projectId: crypto.randomUUID(), title: "demo-repo", workspaceRoot: ${JSON.stringify(repo)}, createdAt: new Date().toISOString() });
+    return project.id;
+  })()`);
+  step("ext.t3.request reaches the clone's server on T3's own socket: server.getConfig names its environment, projects.mutate added a git project");
+  const unknown = await page.evaluate(`(async () => {
+    const { t3 } = window.__t3extSample.ext;
+    const started = Date.now();
+    const error = await t3.request(${JSON.stringify(environmentId)}, "server.noSuchMethod").then(() => null, (error) => error);
+    const again = await t3.request(${JSON.stringify(environmentId)}, "server.noSuchMethod").then(() => null, (error) => error);
+    const settings = await t3.request(${JSON.stringify(environmentId)}, "server.getSettings");
+    return { unknownTag: error?.unknownTag, ms: Date.now() - started, again: again?.unknownTag, settings: !!settings.projectSettingsOverrides };
+  })()`);
+  assert.equal(unknown.unknownTag, true, "a tag the server does not know rejects with unknownTag");
+  assert.equal(unknown.again, true);
+  assert.ok(unknown.ms < 10_000, `the unknown tag rejected from the server's answer, not the timeout (${unknown.ms} ms)`);
+  assert.equal(unknown.settings, true, "the environment answers again afterwards");
+  step(`ext.t3.request: an unknown tag rejects from the server's answer in ${unknown.ms} ms, is not sent again, and the environment answers server.getSettings afterwards`);
+
+  const key = `${environmentId}:${projectId}`;
+  const TRIGGER = `document.querySelector('[data-composer-shortcut="composer.workspace"]')`;
+  const item = (text) => `[...document.querySelectorAll('[data-slot="select-item"]')].find((i) => i.textContent.includes(${JSON.stringify(text)}))`;
+  const saved = `window.__t3extSample.ext.t3.request(${JSON.stringify(environmentId)}, "server.getConfig").then((c) => c.settings.projectSettingsOverrides[${JSON.stringify(projectId)}] ?? null)`;
+  // This run never finished onboarding, so home is the welcome page, whose Start opens a new thread.
+  await page.evaluate('location.hash = "#/"');
+  await evaluateUntil(page, "a new thread in demo-repo", `(() => {
+    if (${TRIGGER}?.textContent.trim() === "Current checkout" && document.body.innerText.includes("demo-repo")) return true;
+    const buttons = [...document.querySelectorAll("button")];
+    (buttons.find((b) => b.getAttribute("aria-label") === "New thread in demo-repo") ?? (location.hash.startsWith("#/welcome") ? buttons.find((b) => b.textContent.trim() === "Start") : null))?.click();
+    return false;
+  })()`);
+  await page.evaluate(`${TRIGGER}.focus()`);
+  await press(page, "Enter");
+  await evaluateUntil(page, "both pins, once the project's settings are read", `window.t3WorkspaceDefault.states[${JSON.stringify(key)}]?.phase === "ready" && document.querySelectorAll(".t3wd-pin:not([hidden])").length === 2`);
+
+  const rowAt = await page.evaluate(`(() => { const r = ${item("New worktree")}.getBoundingClientRect(); return { x: r.x + 30, y: r.y + r.height / 2 }; })()`);
+  await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...rowAt });
+  const pinAt = await evaluateUntil(page, "the pin of the hovered row", `(() => {
+    const r = ${item("New worktree")}.querySelector(".t3wd-pin").getBoundingClientRect();
+    const at = { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    return document.elementFromPoint(at.x, at.y)?.closest(".t3wd-pin") ? at : null;
+  })()`);
+  await mouseClick(page, pinAt.x, pinAt.y);
+  await evaluateUntil(page, "New worktree pinned", `window.t3WorkspaceDefault.states[${JSON.stringify(key)}]?.pinned === "worktree" && window.t3WorkspaceDefault.states[${JSON.stringify(key)}].phase === "ready"`);
+  assert.deepEqual(await page.evaluate(saved), { defaultThreadEnvMode: "worktree" });
+  assert.deepEqual(await page.evaluate(`({ open: ${TRIGGER}.getAttribute("aria-expanded"), label: ${TRIGGER}.textContent.trim(), pin: ${item("New worktree")}.querySelector(".t3wd-pin").textContent })`), { open: "true", label: "Current checkout", pin: "Default" }, "the pin saves without picking the row or closing the menu");
+  step("Workspace Default: the New worktree pin saved the project's own default on the server, and left the menu open on Current checkout");
+
+  await mouseClick(page, pinAt.x, pinAt.y);
+  await evaluateUntil(page, "the pin removed", `window.t3WorkspaceDefault.states[${JSON.stringify(key)}]?.pinned === null && window.t3WorkspaceDefault.states[${JSON.stringify(key)}].phase === "ready"`);
+  assert.equal(await page.evaluate(saved), null, "unpinning the only override removes the project's entry");
+  await press(page, "Escape");
+  step("Workspace Default: clicking Default again removed the project's override");
 }
 
 async function main() {
@@ -345,7 +415,7 @@ async function main() {
     page.events.length = 0;
     await page.evaluate("location.reload()");
     await sleep(1000);
-    await evaluateUntil(page, "the six examples", `document.readyState === 'complete' && ${EXAMPLES.map(ran).join(" && ")}`);
+    await evaluateUntil(page, "the examples", `document.readyState === 'complete' && ${EXAMPLES.map(ran).join(" && ")}`);
     await page.evaluate('location.hash = "#/"');
     await sleep(3000);
     const exampleErrors = await page.evaluate(`window.t3ext.list().then((list) => Object.fromEntries(list.filter((e) => ${JSON.stringify(EXAMPLES)}.includes(e.id)).map((e) => [e.id, e.error])))`);
@@ -363,7 +433,7 @@ async function main() {
       return { button: !!button, projects: button ? Array.isArray(t3.projects()) : null, filter: button ? !!t3.projectFilter() : null, rows: t3.threadRows().length };
     })()`);
     if (contract.button) assert.deepEqual([contract.projects, contract.filter], [true, true], "page.js finds T3's project catalog and filter from the filter button");
-    step(`the six examples load in the clone with no errors or warnings; page.js reads T3: ${JSON.stringify(contract)}`);
+    step(`the ${EXAMPLES.length} examples load in the clone with no errors or warnings; page.js reads T3: ${JSON.stringify(contract)}`);
     const environments = await evaluateUntil(page, "the clone's own environment, connected", `(() => {
       const list = window.__t3extSample.ext.t3.environments.get();
       return list?.length === 1 && list[0].phase === "connected" && list;
@@ -371,6 +441,8 @@ async function main() {
     assert.equal(environments[0].disconnected, false);
     assert.deepEqual(await page.evaluate("window.t3HideOfflineThreads.disconnected"), []);
     step(`ext.t3.environments finds T3's atom registry from React and lists the clone's own environment: ${JSON.stringify(environments)}`);
+
+    await checkWorkspaceDefault(page, dir, environments[0].environmentId);
 
     await page.evaluate(`window.t3ext.setEnabled("sample", false)`);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, "extensions.json"), "utf8")), { disabled: ["sample"], config: {} });

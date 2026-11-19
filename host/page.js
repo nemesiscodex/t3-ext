@@ -395,7 +395,10 @@
     hooked = true;
     const send = WebSocket.prototype.send;
     WebSocket.prototype.send = function (payload) {
-      if (typeof payload === "string" && SENT.test(payload)) onSend(payload);
+      if (typeof payload === "string") {
+        if (SENT.test(payload)) onSend(payload);
+        if (!rpcSockets.has(this)) onFirstSend(this, payload);
+      }
       return send.call(this, payload);
     };
     const data = Object.getOwnPropertyDescriptor(MessageEvent.prototype, "data");
@@ -407,6 +410,7 @@
         if (typeof value === "string" && !inspected.has(this) && this.target instanceof WebSocket) {
           inspected.add(this);
           if (FRAME.test(value)) onFrame(value);
+          onReplyFrame(this.target, value);
         }
         return value;
       },
@@ -487,6 +491,200 @@
       owner,
       isSubagent,
     };
+  }
+
+  // --- Asking an environment's server -----------------------------------------------------------
+
+  // T3 talks to each environment's server over a WebSocket of its own, with effect's RPC protocol
+  // as JSON (RpcClient.makeProtocolSocket and RpcSerialization.layerJson in client-runtime's
+  // rpc/session.ts). A request sent on T3's socket gets its reply on that socket, and T3's client
+  // ignores a reply whose id it never used, so these ids start far above T3's counter. A socket
+  // belongs to the environment its `server.getConfig` names. T3 pings every socket every few
+  // seconds, so each is found soon after the hook goes in. The server splits a frame over 48 KB
+  // into parts, each but the last starting with a record separator (socketFrameParts.ts in T3's
+  // shared package), and a config is larger than that.
+  //
+  // A tag the server does not know fails with "Unknown request tag". T3's server answers that
+  // request alone, but effect's RPC server can also answer with a Defect for the whole connection,
+  // which would fail every request T3 has open on it. Each such tag is remembered for the
+  // environment and never sent there again.
+  const REQUEST_TIMEOUT_MS = 15_000;
+  const OPEN = 1;
+  const STREAM = /(^|\.)subscribe/;
+  const UNKNOWN_TAG = /^Unknown request tag: (.+)$/;
+  const rpcSockets = new Set();
+  const socketListeners = new Set();
+  const socketEnvironments = new WeakMap(); // socket -> Promise<environmentId | null>
+  const knownEnvironments = new WeakMap(); // socket -> environmentId, once its probe answered
+  const unprobeable = new WeakSet(); // sockets whose server does not know server.getConfig
+  const unknownTags = new Map(); // environmentId -> Set of tags its server does not know
+  const pending = new Map(); // request id -> { tag, socket, resolve, reject }
+  const PART = "\u001e";
+  const parts = new WeakMap(); // socket -> the parts of a frame received so far
+  let nextRequestId = 2n ** 62n;
+
+  const isRpcMessage = (message) => message?._tag === "Request" || message?._tag === "Ping";
+
+  const onFirstSend = safely("rpc hook", (socket, text) => {
+    if (!text.includes('"_tag":"')) return;
+    if (![JSON.parse(text)].flat().some(isRpcMessage)) return;
+    rpcSockets.add(socket);
+    socket.addEventListener?.("close", () => {
+      rpcSockets.delete(socket);
+      settleAll(socket, () => true, (waiting) => new Error(`${waiting.tag}: the connection closed`));
+    });
+    for (const listener of [...socketListeners]) listener();
+  });
+
+  function settleAll(socket, matches, errorOf) {
+    for (const [id, waiting] of pending) {
+      if (waiting.socket !== socket || !matches(waiting)) continue;
+      pending.delete(id);
+      waiting.reject(errorOf(waiting));
+    }
+  }
+
+  const unknownTagError = (tag) => Object.assign(new Error(`${tag}: this environment's server does not know it`), { unknownTag: true });
+
+  function markUnknown(socket, tag) {
+    if (tag === "server.getConfig") unprobeable.add(socket);
+    const environmentId = knownEnvironments.get(socket);
+    if (!environmentId) return;
+    if (!unknownTags.has(environmentId)) unknownTags.set(environmentId, new Set());
+    unknownTags.get(environmentId).add(tag);
+  }
+
+  function onDefect(socket, defect) {
+    const tag = String(typeof defect === "string" ? defect : (defect?.message ?? "")).match(UNKNOWN_TAG)?.[1];
+    if (!tag) return;
+    markUnknown(socket, tag);
+    settleAll(socket, (waiting) => waiting.tag === tag, () => unknownTagError(tag));
+  }
+
+  // The first `message` an error carries, or a defect's text, wherever effect's encoded Cause put it.
+  function reasonOf(exit) {
+    const seen = new Set();
+    const find = (value, depth) => {
+      if (!value || typeof value !== "object" || depth > 6 || seen.has(value)) return null;
+      seen.add(value);
+      if (typeof value.message === "string" && value.message) return value.message;
+      if (typeof value.defect === "string" && value.defect) return value.defect;
+      for (const child of Object.values(value)) {
+        const found = find(child, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    };
+    return find(exit, 0) ?? JSON.stringify(exit ?? null).slice(0, 300);
+  }
+
+  const onReplyFrame = safely("rpc reply", (socket, text) => {
+    if (text.startsWith(PART)) {
+      parts.set(socket, (parts.get(socket) ?? "") + text.slice(PART.length));
+      return;
+    }
+    const whole = (parts.get(socket) ?? "") + text;
+    parts.delete(socket);
+    if (!pending.size || !/"_tag":"(Exit|Defect)"/.test(whole)) return;
+    let messages;
+    try {
+      messages = [JSON.parse(whole)].flat();
+    } catch {
+      return; // the tail of a frame whose first parts came before the hook
+    }
+    for (const message of messages) {
+      if (message?._tag === "Defect") onDefect(socket, message.defect);
+      if (message?._tag !== "Exit") continue;
+      const id = String(message.requestId);
+      const waiting = pending.get(id);
+      if (!waiting) continue;
+      pending.delete(id);
+      if (message.exit?._tag === "Success") {
+        waiting.resolve(message.exit.value);
+        continue;
+      }
+      const reason = reasonOf(message.exit);
+      if (reason.match(UNKNOWN_TAG)?.[1] === waiting.tag) {
+        markUnknown(socket, waiting.tag);
+        waiting.reject(unknownTagError(waiting.tag));
+      } else waiting.reject(new Error(`${waiting.tag}: ${reason}`));
+    }
+  });
+
+  function sendRequest(socket, tag, payload) {
+    const id = String(nextRequestId++);
+    return new Promise((resolve, reject) => {
+      pending.set(id, { tag, socket, resolve, reject });
+      setTimeout(() => {
+        if (!pending.delete(id)) return;
+        // So the server stops working on it, and a late write never lands after the caller gave up.
+        if (socket.readyState === OPEN) socket.send(JSON.stringify({ _tag: "Interrupt", requestId: id, interruptors: [] }));
+        reject(new Error(`${tag}: no reply after ${REQUEST_TIMEOUT_MS / 1000} s`));
+      }, REQUEST_TIMEOUT_MS);
+      socket.send(JSON.stringify({ _tag: "Request", id, tag, payload, headers: [] }));
+    });
+  }
+
+  function environmentOfSocket(socket) {
+    if (!socketEnvironments.has(socket)) {
+      socketEnvironments.set(
+        socket,
+        sendRequest(socket, "server.getConfig", {}).then(
+          (config) => config?.environment?.environmentId ?? null,
+          () => null,
+        ).then((found) => {
+          if (found !== null) knownEnvironments.set(socket, found);
+          // Asked again next time, in case the server was only busy.
+          else if (!unprobeable.has(socket)) socketEnvironments.delete(socket);
+          return found;
+        }),
+      );
+    }
+    return socketEnvironments.get(socket);
+  }
+
+  // The open socket of `environmentId`, or null when none answers for it.
+  function findSocket(environmentId) {
+    for (const socket of rpcSockets) if (socket.readyState > OPEN) rpcSockets.delete(socket);
+    const open = [...rpcSockets].filter((socket) => socket.readyState === OPEN);
+    if (!open.length) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      let left = open.length;
+      for (const socket of open) {
+        environmentOfSocket(socket).then((found) => {
+          if (found === environmentId) resolve(socket);
+          else if (--left === 0) resolve(null);
+        });
+      }
+    });
+  }
+
+  // Waits for the environment's socket while T3 connects, or until T3 next pings it.
+  async function socketOf(environmentId) {
+    const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+    for (;;) {
+      const socket = await findSocket(environmentId);
+      if (socket) return socket;
+      if (Date.now() > deadline) throw new Error(`no open connection to environment ${environmentId}`);
+      await new Promise((resolve) => {
+        const done = () => {
+          socketListeners.delete(done);
+          resolve();
+        };
+        socketListeners.add(done);
+        setTimeout(done, 1000);
+      });
+    }
+  }
+
+  // Resolves with the RPC's success value, or rejects with its error's message. An error with
+  // `unknownTag` means the environment's server does not have that RPC.
+  async function request(environmentId, tag, payload = {}) {
+    if (STREAM.test(tag)) throw new Error(`${tag}: ext.t3.request sends requests that answer once, not subscriptions`);
+    hook();
+    const socket = await socketOf(environmentId);
+    if (unknownTags.get(environmentId)?.has(tag)) throw unknownTagError(tag);
+    return sendRequest(socket, tag, payload);
   }
 
   // --- Page UI ----------------------------------------------------------------------------------
@@ -595,7 +793,7 @@
 
   // --- Running each renderer.js -----------------------------------------------------------------
 
-  const t3 = { filterButton: () => document.querySelector(FILTER_BUTTON), projects, projectFilter, threadRows, rowOf, rowData, openThread, fiberOf };
+  const t3 = { filterButton: () => document.querySelector(FILTER_BUTTON), projects, projectFilter, threadRows, rowOf, rowData, openThread, fiberOf, request };
   const ui = { el, icon, layer };
   const ran = new Set();
 

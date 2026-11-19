@@ -1,0 +1,5 @@
+{
+  "name": "Workspace Default",
+  "version": "1.0.0",
+  "description": "Pin Current checkout or New worktree as a project's default right from the composer's Workspace menu"
+}
